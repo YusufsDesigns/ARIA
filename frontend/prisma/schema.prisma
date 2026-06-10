@@ -1,0 +1,48 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+  output          = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Task {
+  id          String      @id @default(cuid())
+  userAddress String
+  input       String
+  status      String      @default("pending")
+  result      Json?
+  totalSpent  Float       @default(0)
+  agentCalls  AgentCall[]
+  createdAt   DateTime    @default(now())
+  completedAt DateTime?
+
+  @@index([userAddress])
+}
+
+model AgentCall {
+  id           String   @id @default(cuid())
+  taskId       String
+  task         Task     @relation(fields: [taskId], references: [id])
+  agentName    String
+  agentAddress String
+  capability   String
+  amountUsdc   Float
+  txHash       String?
+  finding      String?
+  outputType   String   @default("text")
+  status       String   @default("pending")
+  createdAt    DateTime @default(now())
+
+  @@index([taskId])
+}
+
+model UserPermission {
+  userAddress       String   @id
+  permissionContext String
+  expiresAt         DateTime
+  periodAmountUsdc  Float
+  updatedAt         DateTime @updatedAt
+}

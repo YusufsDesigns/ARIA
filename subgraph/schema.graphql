@@ -1,0 +1,29 @@
+type Agent @entity(immutable: false) {
+  id: Bytes!
+  owner: Bytes!
+  name: String!
+  capabilities: [String!]!
+  pricePerTask: BigInt!
+  ipfsCID: String!
+  isActive: Boolean!
+  tasksCompleted: BigInt!
+  totalRating: BigInt!
+  ratingCount: BigInt!
+  registeredAt: BigInt!
+}
+
+type CapabilityRequest @entity(immutable: false) {
+  id: String!
+  capability: String!
+  demand: BigInt!
+  lastRequestedAt: BigInt!
+}
+
+type PaymentEvent @entity(immutable: false) {
+  id: Bytes!
+  agentId: Bytes!
+  agentOwner: Bytes!
+  orchestrator: Bytes!
+  taskCount: BigInt!
+  timestamp: BigInt!
+}
