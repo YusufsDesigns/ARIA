@@ -1,5 +1,10 @@
-app = 'visual-asset-agent'
-primary_region = 'ams'
+# fly.toml app configuration file generated for visual-asset on 2026-06-12T11:35:38Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'visual-asset'
+primary_region = 'jnb'
 
 [build]
 
