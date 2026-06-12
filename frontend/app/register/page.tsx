@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import { uploadAgentMetadata } from '@/lib/pinata'
 import { AriaCard } from '@/components/ui/aria-card'
 import { AriaFooter } from '@/components/ui/aria-footer'
 
@@ -97,8 +96,14 @@ export default function RegisterPage() {
   const handleUploadToIPFS = async () => {
     setError(null); setLoading(true)
     try {
-      const hash = await uploadAgentMetadata(manifest)
-      setCid(hash); setStep(2)
+      const res = await fetch('/api/pinata', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(manifest),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Upload failed')
+      setCid(data.cid); setStep(2)
     } catch (err) { setError(String(err)) }
     finally { setLoading(false) }
   }
@@ -107,10 +112,31 @@ export default function RegisterPage() {
     if (!cid || !address) return
     setError(null); setLoading(true)
     try {
-      const { parseUnits, encodeFunctionData, createWalletClient, http, custom } = await import('viem')
-      const { baseSepolia } = await import('viem/chains')
-      const { createBundlerClient } = await import('viem/account-abstraction')
-      const { toMetaMaskSmartAccount, Implementation } = await import('@metamask/smart-accounts-kit')
+      const { parseUnits, encodeFunctionData } = await import('viem')
+
+      // Switch MetaMask to Base Sepolia (chain 84532 = 0x14a34)
+      try {
+        await (window.ethereum?.request as Function)({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: '0x14a34' }],
+        })
+      } catch (switchErr: unknown) {
+        // Chain not added to MetaMask yet — add it
+        if ((switchErr as { code?: number }).code === 4902) {
+          await (window.ethereum?.request as Function)({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: '0x14a34',
+              chainName: 'Base Sepolia',
+              nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+              rpcUrls: ['https://sepolia.base.org'],
+              blockExplorerUrls: ['https://sepolia.basescan.org'],
+            }],
+          })
+        } else {
+          throw switchErr
+        }
+      }
 
       const caps = form.capabilities.split(',').map((s) => s.trim()).filter(Boolean)
       const price = parseUnits(form.priceUsdc, 6)
@@ -122,66 +148,12 @@ export default function RegisterPage() {
       const data = encodeFunctionData({ abi, functionName: 'registerAgent', args: [caps, price, cid] })
 
       const REGISTRY = process.env.NEXT_PUBLIC_REGISTRY_ADDRESS as `0x${string}`
-      const ONE_SHOT_RPC = 'https://relayer.1shotapi.com/relayers'
 
-      // Attempt Smart Account registration via 1Shot bundler (gas paid in USDC, no ETH needed)
-      // Falls back to standard EOA tx if bundler is not available
-      let tx: string
-      try {
-        // Create MetaMask Smart Account for the developer using their connected wallet as signer
-        const { createPublicClient } = await import('viem')
-        const publicClient = createPublicClient({
-          chain: baseSepolia,
-          transport: http(
-            process.env.NEXT_PUBLIC_ALCHEMY_RPC_URL ?? 'https://sepolia.base.org'
-          ),
-        })
-
-        const walletClient = createWalletClient({
-          transport: custom(window.ethereum as Parameters<typeof custom>[0]),
-          chain: baseSepolia,
-        })
-
-        const [signerAddress] = await walletClient.requestAddresses()
-
-        // Build an account object with required signing methods for MetaMask Smart Account
-        const signerAccount = {
-          address: signerAddress,
-          signMessage: ({ message }: { message: string | { raw: `0x${string}` | Uint8Array } }) =>
-            walletClient.signMessage({ account: signerAddress, message }),
-          signTypedData: (params: Parameters<typeof walletClient.signTypedData>[0]) =>
-            walletClient.signTypedData({ ...params, account: signerAddress }),
-        }
-
-        const smartAccount = await toMetaMaskSmartAccount({
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          client: publicClient as any,
-          implementation: Implementation.Hybrid,
-          deployParams: [signerAddress, [], [], []],
-          deploySalt: '0x',
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          signer: { account: signerAccount as any },
-        })
-
-        const bundlerClient = createBundlerClient({
-          chain: baseSepolia,
-          transport: http(ONE_SHOT_RPC), // 1Shot — pays gas in USDC, no ETH needed
-        })
-
-        const userOpHash = await bundlerClient.sendUserOperation({
-          account: smartAccount,
-          calls: [{ to: REGISTRY, data }],
-        })
-
-        const receipt = await bundlerClient.waitForUserOperationReceipt({ hash: userOpHash })
-        tx = receipt.receipt.transactionHash
-      } catch {
-        // Bundler path unavailable — fall back to standard MetaMask EOA tx
-        tx = await (window.ethereum?.request as Function)({
-          method: 'eth_sendTransaction',
-          params: [{ from: address, to: REGISTRY, data, chainId: '0x14a34' }],
-        }) as string
-      }
+      // Standard EOA transaction — MetaMask signs, user pays Base Sepolia ETH gas (tiny amount)
+      const tx = await (window.ethereum?.request as Function)({
+        method: 'eth_sendTransaction',
+        params: [{ from: address, to: REGISTRY, data }],
+      }) as string
 
       setTxHash(tx); setStep(3)
     } catch (err) { setError(String(err)) }
@@ -313,13 +285,40 @@ export default function RegisterPage() {
                 />
               </FormField>
 
-              <FormField label="Price per Task (USDC)">
-                <input
-                  type="number" step="0.01" min="0.01"
-                  value={form.priceUsdc}
-                  onChange={(e) => setForm({ ...form, priceUsdc: e.target.value })}
-                  style={{ ...inputStyle, width: 160 }}
-                />
+              <div style={{ display: 'flex', gap: 16 }}>
+                <FormField label="Price per Task (USDC)">
+                  <input
+                    type="number" step="0.01" min="0.01"
+                    value={form.priceUsdc}
+                    onChange={(e) => setForm({ ...form, priceUsdc: e.target.value })}
+                    style={{ ...inputStyle, width: 160 }}
+                  />
+                </FormField>
+                <FormField label="Est. Latency (seconds)">
+                  <input
+                    type="number" step="1" min="1"
+                    value={form.estimatedLatency}
+                    onChange={(e) => setForm({ ...form, estimatedLatency: e.target.value })}
+                    style={{ ...inputStyle, width: 160 }}
+                  />
+                </FormField>
+              </div>
+
+              <FormField label="Input Type">
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {(['json', 'text', 'multipart'] as const).map((t) => (
+                    <button key={t} onClick={() => setForm({ ...form, inputType: t })} style={{
+                      fontFamily: 'var(--font-display)', fontSize: 10, fontWeight: 700,
+                      letterSpacing: '0.1em', textTransform: 'uppercase',
+                      padding: '7px 14px', cursor: 'pointer',
+                      background: form.inputType === t ? '#FF6B3515' : 'transparent',
+                      border: `1px solid ${form.inputType === t ? '#FF6B35' : '#222'}`,
+                      color: form.inputType === t ? '#FF6B35' : '#555',
+                    }}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
               </FormField>
 
               <FormField label="Output Types">

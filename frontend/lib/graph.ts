@@ -1,5 +1,6 @@
 import { gql, request } from 'graphql-request'
 import { getAllActiveAgents, getAgent, getCapabilityGaps } from './registry'
+import { fetchAgentMetadata } from './pinata'
 
 const GRAPH_URL = process.env.NEXT_PUBLIC_GRAPH_URL ?? ''
 
@@ -39,6 +40,7 @@ export type GraphAgent = {
   id: string
   owner: string
   name: string
+  description?: string
   capabilities: string[]
   pricePerTask: string
   ipfsCID: string
@@ -75,10 +77,12 @@ export const getActiveAgents = async (capabilities?: string[]): Promise<GraphAge
   const agents = await Promise.all(
     agentIds.map(async (id) => {
       const a = await getAgent(id)
+      const meta = await fetchAgentMetadata(a.ipfsCID).catch(() => null)
       return {
         id,
         owner: a.owner,
-        name: '',
+        name: (meta?.name as string) ?? '',
+        description: (meta?.description as string) ?? '',
         capabilities: a.capabilities,
         pricePerTask: a.pricePerTask.toString(),
         ipfsCID: a.ipfsCID,

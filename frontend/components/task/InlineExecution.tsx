@@ -41,8 +41,7 @@ type AgentStep = {
 
 type Props = {
   taskId: string
-  prompt: string
-  budgetUsdc: number
+  onBudgetUpdate?: (spent: number) => void
 }
 
 const BASESCAN = 'https://sepolia.basescan.org/tx/'
@@ -271,13 +270,12 @@ function FindingRenderer({ finding, outputType }: { finding?: string; outputType
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function InlineExecution({ taskId, prompt, budgetUsdc }: Props) {
+export function InlineExecution({ taskId, onBudgetUpdate }: Props) {
   const [thoughts, setThoughts] = useState<string[]>([])
   const [agents, setAgents] = useState<AgentStep[]>([])
   const [payments, setPayments] = useState<Payment[]>([])
   const [privacyLogs, setPrivacyLogs] = useState<string[]>([])
   const [synthesis, setSynthesis] = useState<{ content: string; outputType?: string } | null>(null)
-  const [budgetSpent, setBudgetSpent] = useState(0)
   const [done, setDone] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
@@ -338,7 +336,7 @@ export function InlineExecution({ taskId, prompt, budgetUsdc }: Props) {
           }
           break
         case 'budget_update':
-          setBudgetSpent(event.payload.budgetSpent ?? 0)
+          onBudgetUpdate?.(event.payload.budgetSpent ?? 0)
           break
         case 'synthesis_complete':
           setSynthesis({
@@ -369,19 +367,6 @@ export function InlineExecution({ taskId, prompt, budgetUsdc }: Props) {
 
   return (
     <div style={{ width: '100%', maxWidth: 760, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
-
-      {/* Original prompt */}
-      <div style={{ background: '#1A1A1A', border: '1px solid #4A4A4A', borderRadius: 8, padding: '16px 20px' }}>
-        <p style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: '#FF6B35', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Your Task</p>
-        <p style={{ fontFamily: 'var(--font-body)', fontSize: 16, color: '#FFF', lineHeight: 1.5 }}>{prompt}</p>
-        <div style={{ display: 'flex', gap: 16, marginTop: 12 }}>
-          <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#888' }}>Budget: {budgetUsdc} USDC</span>
-          <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#888' }}>Spent: {budgetSpent.toFixed(2)} USDC</span>
-          <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: budgetUsdc - budgetSpent < 2 ? '#EF4444' : '#888' }}>
-            Remaining: {(budgetUsdc - budgetSpent).toFixed(2)} USDC
-          </span>
-        </div>
-      </div>
 
       {/* Orchestrator thinking */}
       {thoughts.length > 0 && (

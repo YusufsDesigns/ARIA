@@ -1,63 +1,105 @@
-import OpenAI from 'openai'
-
-const venice = new OpenAI({
-  apiKey: process.env.VENICE_API_KEY!,
-  baseURL: 'https://api.venice.ai/api/v1',
-})
+const BASE = 'https://api.venice.ai/api/v1'
+const KEY = () => process.env.VENICE_API_KEY!
 
 export const VENICE_MODEL = 'llama-3.3-70b'
 
-// Text reasoning — used by Orchestrator and all agents
-export async function veniceChat(
-  messages: OpenAI.ChatCompletionMessageParam[],
-  model = VENICE_MODEL
-): Promise<string> {
-  const res = await venice.chat.completions.create({ model, messages })
-  return res.choices[0].message.content ?? ''
+// ─── Core fetch helper ────────────────────────────────────────────────────────
+// Uses raw fetch instead of the OpenAI SDK so we never accidentally send SDK
+// default parameters (store, stream_options, service_tier…) that Venice rejects.
+
+async function venicePost(path: string, body: Record<string, unknown>): Promise<unknown> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${KEY()}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Venice ${res.status} on ${path}: ${text || '(no body)'}`)
+  }
+  return res.json()
 }
 
-// Web search — Venice-native, live web results
+// ─── Text reasoning ───────────────────────────────────────────────────────────
+
+export async function veniceChat(
+  messages: Array<{ role: string; content: string }>,
+  model = VENICE_MODEL,
+): Promise<string> {
+  const data = await venicePost('/chat/completions', { model, messages }) as {
+    choices: Array<{ message: { content: string } }>
+  }
+  return data.choices[0]?.message?.content ?? ''
+}
+
+// ─── Web search ───────────────────────────────────────────────────────────────
+
 export async function veniceSearch(query: string): Promise<string> {
-  const res = await venice.chat.completions.create({
+  const data = await venicePost('/chat/completions', {
     model: VENICE_MODEL,
     messages: [{ role: 'user', content: query }],
-    // @ts-expect-error Venice-specific parameter
     venice_parameters: { enable_web_search: 'auto' },
-  })
-  return res.choices[0].message.content ?? ''
+  }) as { choices: Array<{ message: { content: string } }> }
+  return data.choices[0]?.message?.content ?? ''
 }
 
-// Web scraping — fetch and summarise a URL
+// ─── Web scraping ─────────────────────────────────────────────────────────────
+
 export async function venciceScrape(url: string, prompt: string): Promise<string> {
-  const res = await venice.chat.completions.create({
-    model: 'openai-gpt-55',
-    messages: [{ role: 'user', content: `${prompt}\n\nURL: ${url}` }],
-    // @ts-expect-error Venice-specific parameter
+  const content = url ? `${prompt}\n\nURL: ${url}` : prompt
+  const data = await venicePost('/chat/completions', {
+    model: VENICE_MODEL,
+    messages: [{ role: 'user', content }],
     venice_parameters: { enable_web_scraping: true },
-  })
-  return res.choices[0].message.content ?? ''
+  }) as { choices: Array<{ message: { content: string } }> }
+  return data.choices[0]?.message?.content ?? ''
 }
 
-// Image generation
+// ─── Image generation ─────────────────────────────────────────────────────────
+
 export async function veniceImage(prompt: string): Promise<string> {
-  const res = await venice.images.generate({
+  const data = await venicePost('/images/generations', {
     model: 'fluently-xl',
     prompt,
     n: 1,
     size: '1024x1024',
-  })
-  const img = res.data?.[0] as Record<string, string> | undefined
+  }) as { data: Array<{ b64_json?: string; url?: string }> }
+  const img = data.data?.[0]
   return img?.b64_json ?? img?.url ?? ''
 }
 
-// Text-to-speech
+// ─── Text-to-speech ───────────────────────────────────────────────────────────
+
 export async function venciceTTS(text: string, voice = 'af_sky'): Promise<Buffer> {
-  const res = await venice.audio.speech.create({
-    model: 'tts-kokoro',
-    input: text,
-    voice: voice as any,
+  const res = await fetch(`${BASE}/audio/speech`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${KEY()}`,
+    },
+    body: JSON.stringify({ model: 'tts-kokoro', input: text, voice }),
   })
-  return Buffer.from(await (res as { arrayBuffer(): Promise<ArrayBuffer> }).arrayBuffer())
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '')
+    throw new Error(`Venice TTS ${res.status}: ${errText || '(no body)'}`)
+  }
+  return Buffer.from(await res.arrayBuffer())
+}
+
+// ─── Default export for direct use in react-loop (chat only) ─────────────────
+
+const venice = {
+  chat: {
+    completions: {
+      create: (params: { model: string; messages: Array<{ role: string; content: string }> }) =>
+        venicePost('/chat/completions', params as Record<string, unknown>).then((data) => data as {
+          choices: Array<{ message: { content: string | null } }>
+        }),
+    },
+  },
 }
 
 export default venice

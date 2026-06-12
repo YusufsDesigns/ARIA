@@ -1,9 +1,4 @@
-# fly.toml app configuration file generated for competitive-tech-agent on 2026-06-12T05:13:54Z
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
-app = 'competitive-tech-agent'
+app = 'visual-asset-agent'
 primary_region = 'ams'
 
 [build]

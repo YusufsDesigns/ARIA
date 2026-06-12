@@ -212,7 +212,7 @@ function AgentCard({ agent, featured }: { agent: GraphAgent; featured?: boolean 
           {agent.name || `Agent ${agent.id.slice(2, 8)}`}
         </p>
         <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: '#555', lineHeight: 1.5 }}>
-          {agent.ipfsCID ? 'On-chain registered agent' : 'Registered on Base Sepolia'}
+          {agent.description || 'Registered on Base Sepolia'}
         </p>
       </div>
 

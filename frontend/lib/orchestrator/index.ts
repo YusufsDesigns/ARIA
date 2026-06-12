@@ -32,12 +32,9 @@ export async function runOrchestrator(
 
     const budget = new BudgetTracker(budgetUsdc, taskId)
 
-    emit('budget_update', {
-      budgetSpent: 0,
-      budgetRemaining: budgetUsdc,
-    })
+    emit('budget_update', { budgetSpent: 0, budgetRemaining: budgetUsdc })
 
-    // Run the full ReAct loop
+    // Run the full ReAct loop (intelligent, constrained, gap-aware)
     const synthesis = await runReactLoop(taskId, userPrompt, budget, permissionContext, userAddress)
 
     // Persist result

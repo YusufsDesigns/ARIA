@@ -118,10 +118,12 @@ function PromptScreen({
   return (
     <div style={{ position: 'relative', width: '100%', height: '100vh', overflow: 'hidden', background: '#000' }}>
       <SmokeBackground smokeColor="#FF6B35" />
+      {/* Dark scrim so content stays readable over the smoke */}
+      <div style={{ position: 'absolute', inset: 0, zIndex: 0, background: 'rgba(0,0,0,0.62)' }} />
 
       {/* Nav */}
       <nav style={{
-        position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10,
+        position: 'absolute', top: 0, left: 0, right: 0, zIndex: 2,
         padding: '0 32px', height: 64,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       }}>
@@ -143,7 +145,7 @@ function PromptScreen({
 
       {/* Centered content */}
       <div style={{
-        position: 'absolute', inset: 0, zIndex: 1,
+        position: 'absolute', inset: 0, zIndex: 2,
         display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
         padding: '80px 24px 40px', overflowY: 'auto',
       }}>
@@ -162,7 +164,7 @@ function PromptScreen({
           <p style={{
             fontFamily: 'var(--font-display)', fontSize: 'clamp(14px, 1.8vw, 18px)',
             fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
-            color: 'rgba(255,255,255,0.45)', marginBottom: 36, textAlign: 'center',
+            color: 'rgba(255,255,255,0.75)', marginBottom: 36, textAlign: 'center',
           }}>
             What would you like to accomplish?
           </p>
@@ -262,13 +264,13 @@ function PromptScreen({
                 onClick={() => setPrompt(q)}
                 style={{
                   fontFamily: 'var(--font-body)', fontSize: 12,
-                  color: 'rgba(255,255,255,0.4)',
-                  background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.08)',
+                  color: 'rgba(255,255,255,0.6)',
+                  background: 'rgba(255,255,255,0.06)',
+                  border: '1px solid rgba(255,255,255,0.12)',
                   padding: '5px 12px', cursor: 'pointer', transition: 'all 150ms',
                 }}
                 onMouseEnter={(e) => { e.currentTarget.style.color = '#FF6B35'; e.currentTarget.style.borderColor = 'rgba(255,107,53,0.4)' }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.4)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)' }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.6)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)' }}
               >
                 {q}
               </button>
@@ -276,6 +278,9 @@ function PromptScreen({
           </div>
 
           {/* Budget + submit row */}
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.14em', textTransform: 'uppercase', alignSelf: 'flex-start', marginBottom: 6 }}>
+            Spending cap — unused budget is never charged
+          </p>
           <div className="aria-budget-row" style={{ marginBottom: 12 }}>
             {/* Budget pills */}
             <div style={{ display: 'flex', gap: 2, flex: 'none' }}>
@@ -325,7 +330,7 @@ function PromptScreen({
             </p>
           )}
 
-          <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'rgba(255,255,255,0.15)', textAlign: 'center', marginTop: 8 }}>
+          <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'rgba(255,255,255,0.35)', textAlign: 'center', marginTop: 8 }}>
             Agents charge 0.20–0.60 USDC per task · Unused budget is never spent · ⌘↵ to submit
           </p>
         </div>
@@ -343,6 +348,7 @@ export default function AppPage() {
   const [taskId, setTaskId] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [budgetSpent, setBudgetSpent] = useState(0)
 
   const handleSubmit = async () => {
     if (!prompt.trim() || !address || submitting) return
@@ -451,12 +457,20 @@ export default function AppPage() {
               </div>
             )}
           </div>
-          <span style={{ fontFamily: 'var(--font-display)', fontSize: 10, fontWeight: 700, color: '#22C55E', letterSpacing: '0.08em', flexShrink: 0, paddingTop: 3 }}>
-            {budget} USDC
-          </span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end', flexShrink: 0, paddingTop: 3 }}>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 10, fontWeight: 700, color: '#22C55E', letterSpacing: '0.08em' }}>
+              {budget} USDC budget
+            </span>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#888', letterSpacing: '0.06em' }}>
+              spent {budgetSpent.toFixed(2)}
+            </span>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, letterSpacing: '0.06em', color: budget - budgetSpent < 2 ? '#EF4444' : '#555' }}>
+              remaining {(budget - budgetSpent).toFixed(2)}
+            </span>
+          </div>
         </div>
 
-        <InlineExecution taskId={taskId} prompt={prompt} budgetUsdc={budget} />
+        <InlineExecution taskId={taskId} onBudgetUpdate={setBudgetSpent} />
 
         <div style={{ marginTop: 48, textAlign: 'center' }}>
           <button
