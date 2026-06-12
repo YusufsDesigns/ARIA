@@ -1,12 +1,6 @@
 import { prisma } from '../prisma'
 import { emitTaskEvent } from '../sse'
 
-export type AgentInfo = {
-  id: string
-  pricePerTask: string // USDC in 6 decimals
-  name?: string
-}
-
 export class BudgetTracker {
   private spent = 0
   private readonly total: number
@@ -21,16 +15,6 @@ export class BudgetTracker {
 
   canAfford(priceUSDC: number): boolean {
     return priceUSDC <= this.remaining
-  }
-
-  findAffordableAgent<T extends AgentInfo>(agents: T[]): T | null {
-    const sorted = agents
-      .filter((a) => {
-        const priceUSDC = Number(a.pricePerTask) / 1e6
-        return this.canAfford(priceUSDC)
-      })
-      .sort((a, b) => Number(a.pricePerTask) - Number(b.pricePerTask))
-    return sorted[0] ?? null
   }
 
   async recordPayment(priceUSDC: number, _agentName: string, _txHash: string) {

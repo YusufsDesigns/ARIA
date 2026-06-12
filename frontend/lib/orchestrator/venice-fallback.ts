@@ -4,7 +4,7 @@ import type { VeniceCallTracker } from './plan'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type FallbackReason = 'no-agent-registered' | 'agent-unavailable' | 'format-unsupported'
+export type FallbackReason = 'no-agent-registered' | 'agent-unavailable' | 'poor-fit' | 'format-unsupported'
 
 type VeniceModality = 'text' | 'image' | 'audio' | 'video' | 'search' | 'scrape' | 'unsupported'
 

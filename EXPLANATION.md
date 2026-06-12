@@ -47,7 +47,7 @@ Everything — every AI call, every payment, every agent interaction — goes th
 ## 2. The Smart Contract
 
 **File:** `contract/src/AgentRegistry.sol`  
-**Deployed:** Base Sepolia at `0x8715eD9A25bf7a681160120A9e1a76615E39B273`
+**Deployed:** Base Sepolia at `0xb025D240e29efE21ba4F973408a82445A9b7f40e`
 
 The contract is the on-chain registry of all agents. It stores:
 
@@ -555,7 +555,7 @@ The `/register` page includes a collapsible guide showing exactly how to add x40
 
 When the Orchestrator needs to hire an agent for capability `X`, here is the exact sequence:
 
-1. `getAgentsByCapability(capability)` — calls `publicClient.readContract()` against the deployed `AgentRegistry` at `0x8715eD9A25bf7a681160120A9e1a76615E39B273`. Returns an array of `bytes32` IDs.
+1. `getAgentsByCapability(capability)` — calls `publicClient.readContract()` against the deployed `AgentRegistry` at `0xb025D240e29efE21ba4F973408a82445A9b7f40e`. Returns an array of `bytes32` IDs.
 
 2. For each ID, `getAgent(id)` is called. This returns the full struct: `{ owner, capabilities, pricePerTask, ipfsCID, isActive, tasksCompleted, ... }`.
 

@@ -5,8 +5,10 @@ import { emitTaskEvent } from '../sse'
 import { BudgetTracker } from './budget'
 import { callAgentWithX402, type AgentResponse } from './pay-agent'
 import { VeniceCallTracker, planInitialCapabilities, getAllDistinctCapabilities } from './plan'
-import { resolveAgentsForCapabilities, type ResolutionResult } from './resolve-agents'
+import { buildHiringPlan, type HiringPlan } from './hiring-plan'
 import { veniceFallback, type FallbackReason } from './venice-fallback'
+import { safeParseJSON } from './safe-json-parse'
+import { summarizeContextForVenice } from './context-summary'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,7 +39,7 @@ function emit(
 // dependencies are expressed as new rounds, not within a round.
 
 async function executeRound(
-  resolution: ResolutionResult,
+  hiringPlan: HiringPlan,
   task: string,
   accumulatedContext: Record<string, Finding>,
   budget: BudgetTracker,
@@ -49,19 +51,20 @@ async function executeRound(
 ): Promise<Record<string, Finding>> {
   const roundResults: Record<string, Finding> = {}
 
-  // Snapshot context for all agents in this round — they all see the same prior state
-  const ctx: Record<string, unknown> = {}
-  for (const [cap, f] of Object.entries(accumulatedContext)) {
-    ctx[cap] = f.output
-  }
+  // Snapshot context for all agents in this round.
+  // summarizeContextForVenice strips binary blobs (base64 image/audio) so
+  // a 40KB image from the visual-asset agent doesn't pollute every subsequent call.
+  const ctx = summarizeContextForVenice(accumulatedContext)
 
   // ── Agent hires ───────────────────────────────────────────────────────────
-  const hirePromises = resolution.agentHires.map(async ({ agent, matchedCapabilities }) => {
+  const hirePromises = hiringPlan.hires.map(async (hire) => {
+    const { agent, coversCapabilities, fitLevel, taskInstructions } = hire
+
     if (!budget.canAfford(agent.priceUSDC)) {
       emit(taskId, 'orchestrator_thinking', {
         message: `Budget insufficient for ${agent.name} (${agent.priceUSDC} USDC) — Venice handling directly`,
       })
-      for (const cap of matchedCapabilities) {
+      for (const cap of coversCapabilities) {
         const result = await veniceFallback(cap, task, ctx, veniceTracker, 'no-agent-registered', gapLoggedThisRun)
         roundResults[cap] = {
           capability: cap, output: result.output, outputType: result.outputType,
@@ -76,8 +79,9 @@ async function executeRound(
       return
     }
 
-    const primaryCap = matchedCapabilities[0]
-    emit(taskId, 'agent_hired', { agentName: agent.name, capability: primaryCap, amountUsdc: agent.priceUSDC })
+    const primaryCap = coversCapabilities[0]
+    const fitNote = fitLevel === 'partial' ? ' (partial fit)' : ''
+    emit(taskId, 'agent_hired', { agentName: agent.name + fitNote, capability: primaryCap, amountUsdc: agent.priceUSDC })
 
     let dbCallId: string | null = null
     try {
@@ -92,9 +96,10 @@ async function executeRound(
 
     let agentResult: AgentResponse | null = null
     try {
+      // Pass Venice-written task instructions, not the raw user prompt
       if (permissionContext && permissionContext !== '0x') {
         agentResult = await callAgentWithX402(
-          `${agent.endpointUrl}/execute`, task, ctx, permissionContext, userAddress,
+          `${agent.endpointUrl}/execute`, taskInstructions, ctx, permissionContext, userAddress,
         )
       } else {
         emit(taskId, 'orchestrator_thinking', {
@@ -103,13 +108,13 @@ async function executeRound(
         const res = await fetch(`${agent.endpointUrl}/execute`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ task, context: ctx }),
+          body: JSON.stringify({ task: taskInstructions, context: ctx }),
         })
         if (res.ok) agentResult = await res.json()
       }
 
       if (agentResult && (agentResult.status === 'success' || agentResult.status === 'partial')) {
-        for (const cap of matchedCapabilities) {
+        for (const cap of coversCapabilities) {
           roundResults[cap] = {
             capability: cap, output: agentResult!.output, outputType: agentResult!.outputType,
             agentName: agent.name, priceUSDC: agent.priceUSDC,
@@ -131,16 +136,35 @@ async function executeRound(
           agentName: agent.name, capability: primaryCap, amountUsdc: agent.priceUSDC,
         })
 
-        for (const cap of matchedCapabilities) {
-          emit(taskId, 'finding_received', {
-            agentName: agent.name, capability: cap,
-            finding: agentResult!.output, outputType: agentResult!.outputType, output: agentResult!.output,
-          })
-        }
+        // Emit finding_received once (for primaryCap only) — the UI has one agent card
+        // per hire, not per capability. All covered capabilities' findings are stored
+        // in roundResults above and flow into synthesis regardless.
+        emit(taskId, 'finding_received', {
+          agentName: agent.name, capability: primaryCap,
+          finding: agentResult.output, outputType: agentResult.outputType, output: agentResult.output,
+        })
 
         emit(taskId, 'privacy_log', {
           message: `Venice AI processed: ${primaryCap} — 0 bytes retained`,
         })
+      } else if (!agentResult) {
+        // Dev-mode fetch returned non-ok HTTP — no exception was thrown, but no result either
+        emit(taskId, 'orchestrator_thinking', {
+          message: `${agent.name} returned an error response — Venice handling directly`,
+        })
+        if (dbCallId) prisma.agentCall.update({ where: { id: dbCallId }, data: { status: 'failed' } }).catch(() => {})
+        for (const cap of coversCapabilities) {
+          const result = await veniceFallback(cap, task, ctx, veniceTracker, 'agent-unavailable', gapLoggedThisRun)
+          roundResults[cap] = {
+            capability: cap, output: result.output, outputType: result.outputType,
+            agentName: 'Venice AI (agent error)', priceUSDC: 0,
+            fallbackReason: result.fallbackReason, capabilityGapLogged: result.capabilityGapLogged,
+          }
+          emit(taskId, 'finding_received', {
+            agentName: roundResults[cap].agentName, capability: cap,
+            finding: result.output, outputType: result.outputType, output: result.output,
+          })
+        }
       }
     } catch (err) {
       emit(taskId, 'orchestrator_thinking', {
@@ -148,9 +172,8 @@ async function executeRound(
       })
       if (dbCallId) prisma.agentCall.update({ where: { id: dbCallId }, data: { status: 'failed' } }).catch(() => {})
 
-      // Agent existed and was reachable but failed during execution —
-      // this is agent-unavailable (runtime error), not a registry gap
-      for (const cap of matchedCapabilities) {
+      // Agent existed and was reachable but failed during execution — downtime, not a gap
+      for (const cap of coversCapabilities) {
         const result = await veniceFallback(cap, task, ctx, veniceTracker, 'agent-unavailable', gapLoggedThisRun)
         roundResults[cap] = {
           capability: cap, output: result.output, outputType: result.outputType,
@@ -165,18 +188,24 @@ async function executeRound(
     }
   })
 
-  // ── Venice fallbacks (no-agent-registered / agent-unavailable) ────────────
-  const fallbackPromises = resolution.fallbacks.map(async ({ capability, reason }) => {
+  // ── Venice fallbacks (no-agent-registered / agent-unavailable / poor-fit) ──
+  const fallbackPromises = hiringPlan.fallbacks.map(async ({ capability, reason }) => {
     const label =
       reason === 'no-agent-registered'
         ? `No agent registered for "${capability}" — Venice handling directly`
+        : reason === 'poor-fit'
+        ? `Registered agents for "${capability}" aren't the right fit for this task — Venice handling directly`
         : `Agent for "${capability}" is offline right now — Venice handling directly`
     emit(taskId, 'orchestrator_thinking', { message: label })
 
     const result = await veniceFallback(capability, task, ctx, veniceTracker, reason, gapLoggedThisRun)
 
     const agentName =
-      reason === 'no-agent-registered' ? 'Venice AI (no agent yet)' : 'Venice AI (agent offline)'
+      reason === 'no-agent-registered'
+        ? 'Venice AI (no agent yet)'
+        : reason === 'poor-fit'
+        ? 'Venice AI (no suitable agent)'
+        : 'Venice AI (agent offline)'
 
     roundResults[capability] = {
       capability, output: result.output, outputType: result.outputType,
@@ -248,10 +277,12 @@ export async function runReactLoop(
       })
     }
 
-    // SEARCH + ACT
-    const resolution = await resolveAgentsForCapabilities(capabilities, gapLoggedThisRun)
+    // SEARCH + ACT — build semantic hiring plan then execute
+    // Strip binaries + slice text so Venice sees only what it needs for hiring decisions
+    const hiringCtx = summarizeContextForVenice(findings)
+    const hiringPlan = await buildHiringPlan(userPrompt, capabilities, hiringCtx, veniceTracker, gapLoggedThisRun)
     const roundResults = await executeRound(
-      resolution, userPrompt, findings, budget, veniceTracker,
+      hiringPlan, userPrompt, findings, budget, veniceTracker,
       gapLoggedThisRun, permissionContext, userAddress, taskId,
     )
     Object.assign(findings, roundResults)
@@ -299,12 +330,11 @@ Return a JSON object on a single line: { "done": boolean, "additionalCapabilitie
 
     try {
       const raw = decisionResponse.choices[0].message.content ?? ''
-      const match = raw.match(/\{[\s\S]*\}/)
-      const decision = JSON.parse(match?.[0] ?? '{}') as {
+      const decision = safeParseJSON<{
         done?: boolean
         additionalCapabilities?: string[]
         reasoning?: string
-      }
+      }>(raw)
 
       emit(taskId, 'orchestrator_thinking', {
         message: decision.reasoning ?? 'Assessing whether more work is needed...',

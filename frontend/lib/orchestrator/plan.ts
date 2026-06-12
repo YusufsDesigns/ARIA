@@ -1,5 +1,6 @@
 import { getAllActiveAgents, getAgent } from '../registry'
 import venice from '../venice'
+import { safeParseJSON } from './safe-json-parse'
 
 // ─── Venice call tracker ──────────────────────────────────────────────────────
 // Wraps every Venice call so the main loop can report an accurate count
@@ -81,11 +82,7 @@ Return a JSON object on a single line: { "capabilities": string[], "reasoning": 
 
   try {
     const raw = response.choices[0].message.content ?? ''
-    const match = raw.match(/\{[\s\S]*\}/)
-    const parsed = JSON.parse(match?.[0] ?? '{}') as {
-      capabilities?: string[]
-      reasoning?: string
-    }
+    const parsed = safeParseJSON<{ capabilities?: string[]; reasoning?: string }>(raw)
     return {
       capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities : [],
       reasoning: parsed.reasoning ?? 'Analysing task requirements.',

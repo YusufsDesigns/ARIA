@@ -117,10 +117,12 @@ Task: ${task}`,
     ])
 
     // STEP 4 — SEARCH TOOL (generate assets): Image + announcement script in parallel
+    // Venice image endpoint caps prompt at 1500 characters
+    const imagePromptTrimmed = imagePrompt.slice(0, 1500)
     const [imageResult, announcementScript] = await Promise.all([
       venice.images.generate({
         model: 'fluently-xl',
-        prompt: imagePrompt,
+        prompt: imagePromptTrimmed,
         n: 1,
         size: '1024x1024',
       }),

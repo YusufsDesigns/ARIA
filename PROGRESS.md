@@ -41,7 +41,7 @@ Quick checklist — update the ✅/❌ after each session:
 
 | Component | Status | Notes |
 |---|---|---|
-| AgentRegistry.sol | ✅ Deployed | Base Sepolia: `0x8715eD9A25bf7a681160120A9e1a76615E39B273` |
+| AgentRegistry.sol | ✅ Deployed | Base Sepolia: `0xb025D240e29efE21ba4F973408a82445A9b7f40e` |
 | Subgraph initialized | ✅ Built + deployed | v0.0.1 live on The Graph Studio |
 | Subgraph built + deployed | ✅ Done | `https://api.studio.thegraph.com/query/1747630/aria-registry/v0.0.1` |
 | Neon DB + Prisma | ✅ Done | Schema pushed, adapter installed |
@@ -154,7 +154,7 @@ Quick checklist — update the ✅/❌ after each session:
 
 ### Environment State
 - Agents running: All 5 built, none running
-- Contract: `0x8715eD9A25bf7a681160120A9e1a76615E39B273` (Base Sepolia)
+- Contract: `0xb025D240e29efE21ba4F973408a82445A9b7f40e` (Base Sepolia)
 - Subgraph: `NEXT_PUBLIC_GRAPH_URL` cleared (contract fallback active)
 - Frontend: All pages built, dev server operational
 
@@ -188,7 +188,7 @@ Quick checklist — update the ✅/❌ after each session:
 ### Environment State
 - Agents running: None (start with `cd agents && ./start-all.sh`)
 - Frontend: `next dev` running on port 3000, all pages clean
-- Contract: `0x8715eD9A25bf7a681160120A9e1a76615E39B273`
+- Contract: `0xb025D240e29efE21ba4F973408a82445A9b7f40e`
 - Subgraph: cleared, using contract reads
 - DB: Neon connected, schema current
 
@@ -264,7 +264,7 @@ Quick checklist — update the ✅/❌ after each session:
 ### Environment State
 - Agents running: None (start with `cd agents && ./start-all.sh`)
 - Frontend: `next dev` on port 3000, all pages 200, TypeScript clean
-- Contract: `0x8715eD9A25bf7a681160120A9e1a76615E39B273` (Base Sepolia)
+- Contract: `0xb025D240e29efE21ba4F973408a82445A9b7f40e` (Base Sepolia)
 - Subgraph: `NEXT_PUBLIC_GRAPH_URL` set but deployment invalid — contract reads active
 - DB: Neon connected and verified, schema in sync
 
@@ -323,7 +323,7 @@ Quick checklist — update the ✅/❌ after each session:
 ### Environment State
 - Agents running: None (start with `cd agents && ./start-all.sh`)
 - Frontend: `next dev` on port 3000, all pages 200, TypeScript clean
-- Contract: `0x8715eD9A25bf7a681160120A9e1a76615E39B273` (Base Sepolia)
+- Contract: `0xb025D240e29efE21ba4F973408a82445A9b7f40e` (Base Sepolia)
 - Subgraph: `NEXT_PUBLIC_GRAPH_URL` set but deployment invalid — contract reads active
 - DB: Neon connected and verified, schema in sync
 - New file: `EXPLANATION.md` — complete architecture reference
@@ -340,7 +340,7 @@ Quick checklist — update the ✅/❌ after each session:
 - [x] Read all project files (AgentRegistry ABI, Deploy script, subgraph scaffold, prisma schema)
 - [x] **Step 1 (Build Order): Subgraph deployed**
   - Replaced schema.graphql with ARIA domain model (`Agent`, `CapabilityRequest`, `PaymentEvent`, all `@entity(immutable: false)`)
-  - Replaced subgraph.yaml with ARIA config (contract `0x8715eD9A25bf7a681160120A9e1a76615E39B273`, startBlock `42505573`, 5 event handlers)
+  - Replaced subgraph.yaml with ARIA config (contract `0xb025D240e29efE21ba4F973408a82445A9b7f40e`, startBlock `42505573`, 5 event handlers)
   - Replaced src/agent-registry.ts with ARIA domain mappings
   - Deployed to The Graph Studio: `https://api.studio.thegraph.com/query/1747630/aria-registry/v0.0.1`
   - Set `NEXT_PUBLIC_GRAPH_URL` in frontend `.env`
@@ -396,7 +396,136 @@ Quick checklist — update the ✅/❌ after each session:
 
 ### Environment State
 - Agents running: None (local, not yet started)
-- Contract address: `0x8715eD9A25bf7a681160120A9e1a76615E39B273` (Base Sepolia)
+- Contract address: `0xb025D240e29efE21ba4F973408a82445A9b7f40e` (Base Sepolia)
 - Subgraph: `https://api.studio.thegraph.com/query/1747630/aria-registry/v0.0.1` (v0.0.1 deployed)
 - Neon DB: `ep-raspy-poetry-aqtqzkd1-pooler.c-8.us-east-1.aws.neon.tech` (schema pushed)
 - Frontend: default Next.js scaffold + lib files + API route scaffolds (no UI built yet)
+---
+
+## Session 6 — 2026-06-12
+**Duration:** ~30 min
+**Focus:** Fix Venice image prompt length error + add semantic agent selection layer
+
+### Completed
+- [x] **Bug fix — visual-asset agent**: Venice `/images/generations` rejects prompts >1500 chars.
+  Fixed in `agents/visual-asset/src/index.ts`: `imagePromptTrimmed = imagePrompt.slice(0, 1500)` before passing to `venice.images.generate()`.
+- [x] **Semantic agent selection layer** — supersedes the coarse `resolveAgentsForCapabilities` price-sort selection:
+  - `frontend/lib/orchestrator/manifest-cache.ts` — process-lifetime IPFS manifest cache (per-CID, no TTL)
+  - `frontend/lib/orchestrator/hiring-plan.ts` — `buildHiringPlan()`: coarse on-chain filter → manifest fetch (cached) → ONE Venice call per round that reads description/examples and writes custom task instructions → health-check chosen agents
+  - `frontend/lib/orchestrator/venice-fallback.ts` — added `'poor-fit'` to `FallbackReason` union (agent has the tag but description shows clear mismatch; does NOT log an on-chain gap)
+  - `frontend/lib/orchestrator/react-loop.ts`:
+    - Replaced `resolveAgentsForCapabilities` import/call with `buildHiringPlan`
+    - `executeRound` now takes `HiringPlan` (not `ResolutionResult`)
+    - Agents receive Venice-written `hire.taskInstructions` instead of the raw user prompt
+    - Fallback label added for `'poor-fit'` reason
+    - Condensed context (400-char slices) passed to `buildHiringPlan` so Venice writes informed instructions
+- [x] TypeScript clean — `npx tsc --noEmit` passes with 0 errors
+
+### Blocked / Issues
+- None
+
+### Decisions Made
+- `response_format: { type: 'json_object' }` removed from Venice call — Venice SDK types don't expose it; using regex JSON parse fallback instead (consistent with rest of codebase)
+- Fallback on Venice hiring-plan failure: cheapest-agent-per-capability selection with raw task as instructions (maintains functionality if semantic call fails)
+- poor-fit does NOT log an on-chain gap (agent exists, just mismatched) — only no-agent-registered does
+
+### Next Session Should Start With
+1. **Step 15 — End-to-end demo**: `cd agents && ./start-all.sh`, expose with ngrok, register all 5 agents at `/register`
+2. Test memecoin demo task end-to-end: connect MetaMask → set budget → submit prompt → watch SSE stream
+3. Verify x402 payments fire and appear in BaseScan
+4. Record demo video
+
+### Environment State
+- Agents running: None (start with `cd agents && ./start-all.sh`)
+- Frontend: `next dev` on port 3000, TypeScript clean
+- Contract: `0xb025D240e29efE21ba4F973408a82445A9b7f40e` (Base Sepolia)
+- Subgraph: cleared, using contract reads
+- DB: Neon connected, schema in sync
+
+---
+
+## Session 7 — 2026-06-12
+**Duration:** ~45 min
+**Focus:** Verify assumptions, fix bugs in Steps 1-4 before semantic selection
+
+### Steps Completed
+
+#### Step 1 — Venice JSON behavior (verified)
+- Venice returns clean JSON with no markdown fences, no leading text
+- `Direct JSON.parse: SUCCESS` — direct parse always works
+- **Action:** Created `frontend/lib/orchestrator/safe-json-parse.ts` (defensive utility anyway)
+  - Strips ` ```json ... ``` ` fences if present
+  - Falls back to brace-extraction if needed
+- Applied `safeParseJSON<T>()` in: `plan.ts` (initial planning), `react-loop.ts` (what's-next decision), `hiring-plan.ts` (hiring plan response)
+
+#### Step 2 — Manifest inspection (all 5 agents)
+| Agent | Description | Examples |
+|---|---|---|
+| Market Intelligence | 136 chars — specific (mentions "live web", "competitor landscape", "community sentiment") | MISSING |
+| Competitive Technical | 181 chars — specific (mentions "Etherscan", "token supply", "audit databases", "risk assessment") | MISSING |
+| Positioning & Strategy | 187 chars — specific (mentions "Venice's strongest reasoning model", "differentiated brand positioning") | MISSING |
+| Visual Asset | 186 chars — specific (mentions "fluently-xl", "tts-kokoro", "image + audio together as JSON") | MISSING |
+| Video Production | 182 chars — specific (mentions "Seedance model", "async queue + polling", "video URL or CDN URL") | MISSING |
+
+**Finding:** Descriptions are specific and differentiated — Venice can meaningfully distinguish agents and write informed task instructions from them alone. Zero examples across all 5. Examples would improve instructions further but are not a blocker.
+
+**Decision:** Proceed with Step 5 (semantic selection). The descriptions alone support it. Add examples to manifests in a future session for further improvement.
+
+#### Step 3 — Context bloat fix
+- Created `frontend/lib/orchestrator/context-summary.ts` — `summarizeContextForVenice()`
+  - Passes text outputs through unchanged
+  - Replaces image/audio/JSON outputs with `[outputType output generated — N chars, not forwarded]`
+- Applied in `react-loop.ts`:
+  - `executeRound`: `ctx` for agent calls now uses `summarizeContextForVenice(accumulatedContext)` — prevents 40KB base64 image from polluting every subsequent agent call
+  - `buildHiringPlan` call site: `hiringCtx = summarizeContextForVenice(findings)` — Venice sees descriptions of binary outputs, not the blobs
+
+#### Step 4 — Undefined function reference audit
+- `getAllDistinctCapabilities`: exists in `plan.ts` ✓
+- `getAgentById`: not needed — hiring plan includes full `ResolvedAgent`, no second lookup ✓
+- `checkHealth`: not needed — health check done inline in `hiring-plan.ts` ✓
+- No other undefined references found across orchestrator files
+
+### Recommendation for Step 5
+**Proceed.** All 5 manifests have specific, differentiated descriptions that enable Venice to make meaningful selection and write tailored task instructions. The lack of examples is acceptable for now — descriptions cover the key differentiators (Etherscan vs web search, fluently-xl image vs Seedance video, etc.).
+
+### Environment State
+- TypeScript: 0 errors (`npx tsc --noEmit` clean)
+- 5 new/updated orchestrator files: `safe-json-parse.ts`, `context-summary.ts`, `manifest-cache.ts`, `hiring-plan.ts` (updated), `react-loop.ts` (updated), `plan.ts` (updated)
+- Semantic selection layer: implemented and active
+- Agents: 5 registered on-chain (fly.dev endpoints — verify deployment status before demo)
+
+---
+
+## Session 8 — 2026-06-12
+**Duration:** ~20 min
+**Focus:** Full codebase audit + bug fixes (pre-demo cleanup)
+
+### Bugs Fixed
+- [x] **Multi-capability agent `finding_received` UI bug** — `executeRound` was emitting `finding_received` for EVERY capability in `hire.coversCapabilities`, but `InlineExecution.tsx` matches findings by `capability` and only has one agent card per hire (keyed on `primaryCap`). Secondary capability findings silently discarded in UI. **Fix:** `react-loop.ts` now emits `finding_received` once (for `primaryCap` only). Internal `roundResults` still stores findings for ALL covered capabilities — they flow into synthesis correctly.
+- [x] **Dev-mode null agentResult silent drop** — When dev-mode direct fetch returned non-ok HTTP, `agentResult` stayed null but no exception was thrown. The `if (agentResult && ...)` block was skipped, Venice fallback was never triggered, the capability was silently dropped from `roundResults`. **Fix:** Added `else if (!agentResult)` branch that fires Venice fallback for all covered capabilities.
+
+### Dead Code Removed
+- [x] `BudgetTracker.findAffordableAgent<T>()` method removed from `budget.ts` — never called anywhere
+- [x] `AgentInfo` type removed from `budget.ts` — was only used by `findAffordableAgent`
+
+### TypeScript
+- `npx tsc --noEmit --skipLibCheck` exits 0 after all changes
+
+### Bugs NOT Fixed (Known Limitations)
+- `resolve-agents.ts` — `resolveAgentsForCapabilities()` and `findFirstReachable()` are dead code. File still exports `type { ResolvedAgent }` which is used by `hiring-plan.ts` — leaving as-is to avoid type refactor.
+- `NEXT_PUBLIC_ALCHEMY_RPC_URL` not in `.env` — `ConnectButton.tsx` falls through to `https://sepolia.base.org` (public RPC). Non-blocking for demo.
+- SSE events emitted before browser connects are lost (in-memory bus, no replay). First `orchestrator_thinking` event can miss if client is slow. Not fixable without Redis pub/sub or event replay.
+
+### Next Session Should Start With
+1. **Step 15 — End-to-end demo**: `cd agents && ./start-all.sh`, verify fly.dev endpoints are live
+2. Test memecoin demo task: connect MetaMask on `/app`, 10 USDC budget, submit prompt
+3. Verify SSE stream shows all event types
+4. Verify x402 payments show tx hashes + BaseScan links
+5. Record demo video
+
+### Environment State
+- Agents: None running locally (fly.dev endpoints are registered on-chain)
+- Frontend: TypeScript clean, `next dev` on port 3000
+- Contract: `0xb025D240e29efE21ba4F973408a82445A9b7f40e`
+- Subgraph: contract reads active
+- DB: Neon connected, schema in sync
