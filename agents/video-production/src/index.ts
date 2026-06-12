@@ -13,6 +13,8 @@ const NETWORK_ID = 'eip155:84532' // Base Sepolia
 const PORT = Number(process.env.PORT ?? 4005)
 const VENICE_API_KEY = process.env.VENICE_API_KEY!
 const VENICE_BASE_URL = 'https://api.venice.ai/api/v1'
+// Set AGENT_BASE_URL to your public URL (ngrok/Railway) so the frontend can reach /video/:id
+const AGENT_BASE_URL = (process.env.AGENT_BASE_URL ?? `http://localhost:${PORT}`).replace(/\/$/, '')
 
 const payToAddress = (
   process.env.AGENT_VIDEO_PRODUCTION_PAY_TO ?? process.env.ORCHESTRATOR_SESSION_ADDRESS!
@@ -163,7 +165,7 @@ async function generateVideo(
       const videoId = randomUUID()
       videoStore.set(videoId, { buffer, mimeType: 'video/mp4', createdAt: Date.now() })
       return {
-        videoUrl: `http://localhost:${PORT}/video/${videoId}`,
+        videoUrl: `${AGENT_BASE_URL}/video/${videoId}`,
         videoBase64: buffer.toString('base64'),
         videoMimeType: 'video/mp4',
         videoPrompt: prompt,

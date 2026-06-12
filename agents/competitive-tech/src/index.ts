@@ -54,7 +54,8 @@ const venice = new OpenAI({
 })
 
 const MODEL = 'llama-3.3-70b'
-const ETHERSCAN_BASE = 'https://api-sepolia.basescan.org/api'
+const ETHERSCAN_BASE = 'https://api.etherscan.io/v2/api'
+const ETHERSCAN_CHAIN_ID = '84532' // Base Sepolia
 const ETHERSCAN_KEY = process.env.ETHERSCAN_API_KEY ?? ''
 
 async function veniceChat(messages: OpenAI.ChatCompletionMessageParam[]): Promise<string> {
@@ -74,7 +75,7 @@ async function veniceSearch(query: string): Promise<string> {
 
 async function etherscanFetch(params: Record<string, string>): Promise<unknown> {
   const url = new URL(ETHERSCAN_BASE)
-  Object.entries({ ...params, apikey: ETHERSCAN_KEY }).forEach(([k, v]) =>
+  Object.entries({ chainid: ETHERSCAN_CHAIN_ID, ...params, apikey: ETHERSCAN_KEY }).forEach(([k, v]) =>
     url.searchParams.set(k, v)
   )
   const res = await fetch(url.toString())
