@@ -23,8 +23,8 @@ export type FallbackResult = {
 // is appropriate. This is what determines whether we call text/image/audio/
 // video/search/scrape or flag something as genuinely unsupported.
 
-function classifyCapability(capability: string, task: string): VeniceModality {
-  const text = `${capability} ${task}`.toLowerCase()
+function classifyCapability(capability: string, _task: string): VeniceModality {
+  const text = capability.toLowerCase()
   if (/\b(image|banner|visual|logo|design|graphic|brand[\s-]?asset)\b/.test(text)) return 'image'
   if (/\b(audio|tts|speech|voice|narration|podcast|announcement)\b/.test(text)) return 'audio'
   if (/\b(video|clip|animation|reel|motion|film)\b/.test(text)) return 'video'
@@ -72,10 +72,12 @@ export async function veniceFallback(
       const promptText = await veniceChat([
         {
           role: 'user',
-          content: `Create a detailed, cinematic image generation prompt for: ${task}\nContext: ${JSON.stringify(context)}`,
+          // Venice image API hard limit is 1500 chars — ask for a compact prompt
+          content: `Write a vivid image generation prompt (max 200 words, under 1200 characters) for: ${task}`,
         },
       ])
-      const b64 = await veniceImage(promptText)
+      // Truncate defensively in case the model ignores the length instruction
+      const b64 = await veniceImage(promptText.slice(0, 1400))
       return {
         status: 'success', output: b64, outputType: 'image', contentType: 'image/png',
         executionTime: elapsed(), fallbackReason, capabilityGapLogged,

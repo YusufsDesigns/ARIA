@@ -7,7 +7,7 @@ export type WalletState = {
   isConnected: boolean
   showGuard: boolean
   onConnected: (addr: string) => void
-  disconnect: () => void
+  disconnect: () => Promise<void>
 }
 
 export function useWalletGuard(): WalletState {
@@ -26,9 +26,17 @@ export function useWalletGuard(): WalletState {
     setAddress(addr)
   }, [])
 
-  const disconnect = useCallback(() => {
+  const disconnect = useCallback(async () => {
     if (typeof window !== 'undefined') {
       sessionStorage.removeItem('aria_address')
+      // Revoke MetaMask's eth_accounts permission so the site shows as disconnected
+      // in the extension. Not all wallets support this — fail silently.
+      try {
+        await (window.ethereum as any)?.request({
+          method: 'wallet_revokePermissions',
+          params: [{ eth_accounts: {} }],
+        })
+      } catch { /* non-fatal */ }
     }
     setAddress(null)
   }, [])

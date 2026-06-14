@@ -40,7 +40,19 @@ function CenteredLayout({ children }: { children: React.ReactNode }) {
 }
 
 // ─── Wallet guard screen ──────────────────────────────────────────────────────
-function WalletGuard({ onConnected }: { onConnected: (addr: string) => void }) {
+// Budget selector lives HERE — the selected amount is passed to ConnectButton so
+// requestExecutionPermissions is called with the right USDC cap. Showing it after
+// connect means the permission is already granted at 10 USDC and can't be changed.
+function WalletGuard({
+  onConnected,
+  budget,
+  setBudget,
+}: {
+  onConnected: (addr: string) => void
+  budget: number
+  setBudget: (b: number) => void
+}) {
+  const presets = [5, 10, 15]
   return (
     <CenteredLayout>
       <Image
@@ -54,11 +66,39 @@ function WalletGuard({ onConnected }: { onConnected: (addr: string) => void }) {
       <p style={{
         fontFamily: 'var(--font-display)', fontSize: 'clamp(14px, 2vw, 18px)',
         fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
-        color: 'rgba(255,255,255,0.5)', marginBottom: 40, textAlign: 'center',
+        color: 'rgba(255,255,255,0.5)', marginBottom: 32, textAlign: 'center',
       }}>
         Any goal. The right agents.
       </p>
-      <ConnectButton onConnected={onConnected} budgetUsdc={10} />
+
+      {/* Budget selector — must be chosen before connecting */}
+      <div style={{ marginBottom: 32, textAlign: 'center' }}>
+        <p style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>
+          Set spending cap
+        </p>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+          {presets.map(b => (
+            <button
+              key={b}
+              onClick={() => setBudget(b)}
+              style={{
+                fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 600,
+                padding: '8px 20px', border: budget === b ? '1px solid #FF6B35' : '1px solid rgba(255,255,255,0.12)',
+                background: budget === b ? 'rgba(255,107,53,0.12)' : 'transparent',
+                color: budget === b ? '#FF6B35' : 'rgba(255,255,255,0.3)',
+                cursor: 'pointer', transition: 'all 150ms',
+              }}
+            >
+              {b} USDC
+            </button>
+          ))}
+        </div>
+        <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'rgba(255,255,255,0.2)', marginTop: 8 }}>
+          Agents charge 0.20–0.60 USDC per task · Unused budget is never spent
+        </p>
+      </div>
+
+      <ConnectButton onConnected={onConnected} budgetUsdc={budget} />
       <p style={{
         fontFamily: 'var(--font-body)', fontSize: 12,
         color: 'rgba(255,255,255,0.2)', marginTop: 24, textAlign: 'center', letterSpacing: '0.04em',
@@ -343,12 +383,43 @@ function PromptScreen({
 export default function AppPage() {
   const { address, showGuard, onConnected, disconnect } = useWalletGuard()
   const [budget, setBudget] = useState(10)
+  // grantedBudget is the periodAmount actually approved in MetaMask — fetched after connect.
+  // The task budget is capped at this value so BudgetTracker never exceeds what the
+  // facilitator will honour.
+  const [grantedBudget, setGrantedBudget] = useState<number | null>(null)
   const [prompt, setPrompt] = useState('')
   const [attachedFiles, setAttachedFiles] = useState<File[]>([])
   const [taskId, setTaskId] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [budgetSpent, setBudgetSpent] = useState(0)
+  const [budgetFlash, setBudgetFlash] = useState(false)
+
+  // After connect, fetch the granted periodAmountUsdc so the task budget can't exceed it
+  const handleConnected = async (addr: string) => {
+    onConnected(addr)
+    try {
+      const res = await fetch(`/api/delegate?address=${encodeURIComponent(addr)}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.periodAmountUsdc) {
+          const granted = Number(data.periodAmountUsdc)
+          setGrantedBudget(granted)
+          // Clamp the currently-selected budget to what was actually granted
+          setBudget(prev => Math.min(prev, granted))
+        }
+      }
+    } catch { /* proceed with whatever budget is selected */ }
+  }
+
+  const handleBudgetUpdate = (spent: number) => {
+    setBudgetSpent(spent)
+    setBudgetFlash(true)
+    setTimeout(() => setBudgetFlash(false), 600)
+  }
+
+  // Task budget is always ≤ grantedBudget (the on-chain permission cap)
+  const effectiveBudget = grantedBudget !== null ? Math.min(budget, grantedBudget) : budget
 
   const handleSubmit = async () => {
     if (!prompt.trim() || !address || submitting) return
@@ -361,7 +432,7 @@ export default function AppPage() {
         body: JSON.stringify({
           userAddress: address,
           input: prompt,
-          budgetUsdc: budget,
+          budgetUsdc: effectiveBudget,
           attachments: attachedFiles.map((f) => f.name),
         }),
       })
@@ -378,15 +449,15 @@ export default function AppPage() {
   }
 
   // 1. Wallet guard
-  if (showGuard) return <WalletGuard onConnected={onConnected} />
+  if (showGuard) return <WalletGuard onConnected={handleConnected} budget={budget} setBudget={setBudget} />
 
   // 2. Pre-task prompt
   if (!taskId) {
     return (
       <PromptScreen
         address={address!}
-        budget={budget}
-        setBudget={setBudget}
+        budget={effectiveBudget}
+        setBudget={(b) => setBudget(grantedBudget !== null ? Math.min(b, grantedBudget) : b)}
         prompt={prompt}
         setPrompt={setPrompt}
         submitting={submitting}
@@ -457,20 +528,51 @@ export default function AppPage() {
               </div>
             )}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end', flexShrink: 0, paddingTop: 3 }}>
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: 10, fontWeight: 700, color: '#22C55E', letterSpacing: '0.08em' }}>
-              {budget} USDC budget
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end', flexShrink: 0, paddingTop: 2, minWidth: 130 }}>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#555', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+              {budget} USDC Budget
             </span>
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#888', letterSpacing: '0.06em' }}>
-              spent {budgetSpent.toFixed(2)}
-            </span>
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, letterSpacing: '0.06em', color: budget - budgetSpent < 2 ? '#EF4444' : '#555' }}>
-              remaining {(budget - budgetSpent).toFixed(2)}
-            </span>
+            {/* Progress bar */}
+            <div style={{ width: 130, height: 4, background: '#1A1A1A', borderRadius: 2, overflow: 'hidden' }}>
+              <div style={{
+                height: '100%',
+                width: `${Math.min((budgetSpent / budget) * 100, 100)}%`,
+                background: budgetSpent / budget > 0.8 ? '#EF4444' : budgetSpent / budget > 0.5 ? '#F59E0B' : '#FF6B35',
+                borderRadius: 2,
+                transition: 'width 400ms ease, background 400ms ease',
+              }} />
+            </div>
+            {/* Spent / Remaining */}
+            <div style={{ display: 'flex', gap: 14 }}>
+              <div style={{ textAlign: 'right' }}>
+                <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#555', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 2 }}>Spent</p>
+                <p style={{
+                  fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 700,
+                  color: budgetFlash ? '#FFF' : '#FF6B35',
+                  letterSpacing: '0.04em',
+                  transition: 'color 150ms',
+                  animation: budgetFlash ? 'budgetPulse 0.5s ease' : 'none',
+                }}>
+                  {budgetSpent.toFixed(2)}
+                </p>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#555', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 2 }}>Remaining</p>
+                <p style={{
+                  fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 700,
+                  letterSpacing: '0.04em',
+                  color: budget - budgetSpent < 2 ? '#EF4444' : budget - budgetSpent < budget * 0.4 ? '#F59E0B' : '#22C55E',
+                  transition: 'color 300ms',
+                }}>
+                  {(budget - budgetSpent).toFixed(2)}
+                </p>
+              </div>
+            </div>
+            <style>{`@keyframes budgetPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.7;transform:scale(1.08)} }`}</style>
           </div>
         </div>
 
-        <InlineExecution taskId={taskId} onBudgetUpdate={setBudgetSpent} />
+        <InlineExecution taskId={taskId} onBudgetUpdate={handleBudgetUpdate} />
 
         <div style={{ marginTop: 48, textAlign: 'center' }}>
           <button

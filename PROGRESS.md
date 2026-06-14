@@ -529,3 +529,168 @@ Quick checklist — update the ✅/❌ after each session:
 - Contract: `0xb025D240e29efE21ba4F973408a82445A9b7f40e`
 - Subgraph: contract reads active
 - DB: Neon connected, schema in sync
+
+---
+
+## Session 9 — 2026-06-13
+**Duration:** ~2 hours
+**Focus:** End-to-end runtime debugging — agents offline, runaway loop, 402 payment failure
+
+### Bugs Fixed
+
+#### 1. Budget mismatch — WalletGuard hardcoded 10 USDC
+`requestExecutionPermissions` was called with hardcoded `periodAmount: 10 USDC` regardless of user's slider selection. Budget selector was shown *after* the grant was already made with the wrong amount.
+**Fix:** Budget preset buttons (5/10/15 USDC) moved *before* ConnectButton inside `WalletGuard`. `WalletGuard` now accepts `budget` and `setBudget` props. Budget feeds directly into `requestExecutionPermissions`.
+**Files:** `frontend/app/app/page.tsx`, `frontend/hooks/useWalletGuard.ts`
+
+#### 2. All agents showing "offline" — missing `https://` in IPFS manifests
+Root cause: IPFS manifests (uploaded at `/register`) stored bare hostnames without `https://`. Node's `fetch()` requires absolute URLs. Every health check silently threw `TypeError: Failed to parse URL`, caught by try/catch, marking agents `agent-unavailable`. All 5 agents were always running and reachable.
+**Fix:** URL normalisation in `hiring-plan.ts` when reading manifest: `raw.startsWith('http') ? raw : \`https://\${raw}\``
+**Files:** `frontend/lib/orchestrator/hiring-plan.ts`
+
+#### 3. Runaway capability loop (14 capabilities, 6 rounds)
+Two root causes:
+- `planInitialCapabilities` was registry-first: showed Venice the full registry as a menu, Venice treated it as an order list and picked 3 capabilities regardless of whether they could run in Round 1.
+- OBSERVE+REASON prompt showed `allCaps` (full registry list) after each round — Venice treated it as "here are more tools, add them". Added capabilities in every round.
+**Fix:** `planInitialCapabilities` rewritten to task-first reasoning with explicit Round 1 rules (what can/can't run without prior findings). `allCaps` removed from OBSERVE+REASON prompt entirely — Venice now grounded in actual findings.
+**Also removed:** 2-capability ceiling (`.slice(0, 2)` — wrong band-aid), "default to done: true when unsure" (caused premature termination). `allRegistryCapabilities` field added to `HiringPlan.hires` so all agent capability tags go into `attempted` set after each hire.
+**Files:** `frontend/lib/orchestrator/plan.ts`, `frontend/lib/orchestrator/react-loop.ts`, `frontend/lib/orchestrator/hiring-plan.ts`
+
+#### 4. Orchestrator section collapsible
+Added `CollapsibleSection` component to `InlineExecution.tsx`. Orchestrator section starts open; collapses with ▶ toggle. When collapsed, header shows last orchestrator thought as one-line preview + animated orange dots if still running.
+**File:** `frontend/components/task/InlineExecution.tsx`
+
+#### 5. Privacy comparison grid removed from `/app`
+"Standard AI Platforms vs ARIA × Venice AI" side-by-side marketing grid was on the execution page. Removed. Replaced with simple Venice call counter and single-line privacy receipt at task completion.
+**File:** `frontend/components/task/InlineExecution.tsx`
+
+#### 6. Venice fallback findings not appearing in UI
+Venice fallbacks emitted `finding_received` but never `agent_hired`. InlineExecution renders findings inside agent cards created by `agent_hired` — without it, findings were visually lost.
+**Fix:** `agent_hired` now emitted (with `amountUsdc: 0`) before Venice fallback runs.
+**File:** `frontend/lib/orchestrator/react-loop.ts`
+
+#### 7. Synthesis hallucinating image/audio descriptions
+When agent returned image/audio, orchestrator stored placeholder `[image content generated — displayed in UI]` in context. Venice saw the placeholder in synthesis and invented descriptions.
+**Fix:** Synthesis prompt now explicitly instructs Venice not to describe media placeholders.
+**File:** `frontend/lib/orchestrator/react-loop.ts`
+
+### Bugs Identified — NOT YET FIXED
+
+#### 8. Images rendering everywhere — `classifyCapability` using full task text
+`classifyCapability` computes: `const text = \`${capability} ${task}\`.toLowerCase()`. Task text containing "banner/image/logo" causes EVERY fallback to use the image modality.
+**Fix (identified, not applied):** Change to `const text = capability.toLowerCase()` — classify by capability name only.
+
+#### 9. Agent returns 402 on paid request — ERC-7710 payment fails facilitator verification
+Symptom: "Agent call failed after payment (402): {}"
+Investigation in progress at session end. Confirmed:
+- `redelegatePermissionContextOpenAction` exists and returns `{ permissionContext: 0x... }` (hex, valid)
+- x402 express middleware correctly reads both `payment-signature` and `PAYMENT-SIGNATURE` headers
+- Payment reaches facilitator `verify()` call
+
+Suspected cause: Payment payload in `pay-agent.ts` is missing the `accepted` field at top level:
+```typescript
+// Current (missing accepted):
+{ x402Version, payload: { delegationManager, permissionContext, delegator } }
+
+// Spec requires (with accepted):
+{ x402Version, accepted, payload: { delegationManager, permissionContext, delegator } }
+```
+**Next step:** Add `accepted` to payload in `frontend/lib/orchestrator/pay-agent.ts` lines 97–107 and test.
+
+### Decisions Made
+- Railway does NOT sleep by default (opt-in Serverless feature) — confirmed non-issue
+- 5 agents registered on-chain with Railway URLs — all reachable, just missing https:// prefix
+- `planInitialCapabilities` must be task-first, not registry-first — registry shown as context only
+- Privacy comparison belongs on landing page only, not on execution page
+- Agent fallback findings need `agent_hired` event to create UI container before `finding_received`
+
+### Next Session Should Start With
+1. **Fix `classifyCapability`** (5 min) — change to `capability.toLowerCase()` only
+2. **Fix agent 402** — add `accepted` to payment payload in `pay-agent.ts` and test
+3. **End-to-end test** — memecoin demo, connect MetaMask, watch SSE stream
+4. **Record demo video**
+
+### Environment State
+- Agents: 5 on Railway (all running, all reachable with https:// prefix normalisation)
+- Frontend: `next dev` on port 3000, all bug fixes applied except #8 and #9
+- Contract: `0xb025D240e29efE21ba4F973408a82445A9b7f40e`
+- Subgraph: contract reads active
+- DB: Neon connected, schema in sync
+- Two bugs remain before e2e demo works: classifyCapability + agent 402 payment
+
+---
+
+## Session 11 — 2026-06-13
+**Duration:** ~1 hour
+**Focus:** Fix the x402 402 payment failure (buyer side) by switching to the official MetaMask SDK buyer flow
+
+### Root cause (the Session 9/10 `402 {}` bug)
+The seller (agent servers) was correct. The **buyer** (orchestrator `pay-agent.ts`) hand-rolled the delegation payload instead of using the SDK, with two fatal defects:
+1. **Wrong signer** — the ERC-7715 grant's `to` is the orchestrator **EOA** (`0x2597…`), but the redelegation was signed by the orchestrator **smart account** (different CREATE2 address). Facilitator rejects: signer ≠ the delegate the parent delegated to.
+2. **Hand-rolled payload** — missing the `redeemer`/`allowedTargets`/`timestamp` caveats and exact chain encoding that `createx402DelegationProvider` produces automatically.
+3. `grant.from` (user's smart account) was sent by `ConnectButton.tsx` but dropped by `/api/delegate` — never reached the payment code.
+
+### Completed
+- [x] **`pay-agent.ts` rewritten** to the official "Recurring x402 Payments" buyer flow: `createx402DelegationProvider({ account: orchestratorEOA, environment: mmEnvironment, parentPermissionContext, from })` → `x402Erc7710Client` → `x402Client().register('eip155:*', …)` → `x402HTTPClient` → `wrapFetchWithPayment(fetch)`. Deleted the manual decode/create/sign/encode block and the unused `probeAgentPaymentRequirements`.
+- [x] **tx hash** now read from `PAYMENT-RESPONSE` via `decodePaymentResponseHeader(header).transaction` (typed `SettleResponse`) → real BaseScan links.
+- [x] **`permissionFrom` plumbed end-to-end**: added `UserPermission.permissionFrom String?` to Prisma schema (`db push` done), stored + returned in `/api/delegate`, read in `index.ts`, threaded through `runReactLoop` → `executeRound` → `callAgentWithX402`.
+- [x] Verified all SDK exports exist in installed versions: `createx402DelegationProvider` (`@metamask/smart-accounts-kit@1.6.0/experimental`), `x402Erc7710Client` (`@metamask/x402@0.2.0`), `x402Client`/`x402HTTPClient` (`@x402/core@2.14.0/client`), `wrapFetchWithPayment`/`decodePaymentResponseHeader` (`@x402/fetch`).
+- [x] **Prisma generation fix** — a stale `app/generated/prisma/models/` dir (old generator layout) shadowed the new types and broke `tsc`. `rm -rf app/generated/prisma && npx prisma generate` produced a consistent client.
+- [x] `npx tsc --noEmit --skipLibCheck` → 0 errors.
+
+### Blocked / Issues
+- **Re-connect required before testing:** existing `UserPermission` rows have null `permissionFrom`. Users must disconnect + reconnect once so the grant re-stores with `permissionFrom`. Old rows fall back to `userAddress`.
+- Not yet run end-to-end against live agents — needs a fresh wallet connect + memecoin demo to confirm settlement + BaseScan hash.
+
+### Next Session Should Start With
+1. Restart `next dev` (schema/env), disconnect + reconnect wallet to populate `permissionFrom`
+2. Run the memecoin demo prompt; confirm payments settle (no more 402) and BaseScan links appear
+3. Confirm 1Shot is visibly used on-chain (capability gap / task completion writes) for that track
+4. Record demo video
+
+### Environment State
+- Agents: 5 on Railway (unchanged)
+- Frontend: TypeScript clean, payment path now SDK-based
+- Contract: `0xb025D240e29efE21ba4F973408a82445A9b7f40e`
+- DB: Neon, schema in sync (added `permissionFrom`)
+
+### Follow-up (same day) — second 402 root cause: wrong `from`
+Payments still returned `402 {}` after the SDK switch. Read the SDK source
+(`createx402DelegationProvider`) + decoded a real stored grant to settle it:
+- Decoded grant (root delegation): delegator `0x1b9c…` (user) → delegate `0x2597…` (orchestrator EOA), authority `0xffffffff`, 4 caveats.
+- The provider does `from = config.from ?? account.address`, builds `createOpenDelegation({ from, parentDelegation })`, and signs with `account` (orchestrator EOA). A redelegation is only valid if `delegator == parent.delegate` AND it's signed by that delegator. We were passing `from: permissionFrom` = the **user** (`0x1b9c…`), so delegator ≠ signer ≠ parent.delegate → DelegationManager rejects → facilitator `verify()` fails → seller `402 {}`.
+- **Fix:** omit `from` entirely in `pay-agent.ts` so it defaults to `account.address` (orchestrator EOA = the parent's delegate). Confirmed against METAMASK.md "Create a Redelegation" (Bob→Carol: `from: bob` = parent's delegate, signed by Bob). The user (whose USDC moves) is recovered by the SDK as `rootDelegator` from the root delegation and returned as the payload `delegator`.
+- `permissionFrom` plumbing left in place but unused by the payment path.
+- Also hardened `ConnectButton.tsx`: restore path now verifies a grant exists in DB before showing "connected" (kills the stale-sessionStorage 404 trap); grant failures surface a console error + on-screen dev-mode warning instead of silently storing `'0x'`.
+- `npx tsc --noEmit` → 0 errors.
+
+**Next:** reconnect wallet, run LUNARPUP demo, confirm payments settle (no 402) + BaseScan tx hash appears.
+
+---
+
+## Session 12 — 2026-06-14
+**Duration:** ~3 hours
+**Focus:** Make agents genuinely special (real verifiable data, not LLM wrappers) + kill the 502 for all of them + beautiful structured frontend rendering
+
+### The problem being solved
+Agents were thin LLM wrappers (3 of 5 could be replicated by ChatGPT-with-browsing). The 502 was the heavy agents' serial Venice chains (8 + 7 calls) overrunning Railway's request window on a buffered x402 request. Decision (user-approved): full redesign of all 5 + two-phase async for slow agents + rich frontend rendering.
+
+### Completed
+- [x] **Structured result contract** — `frontend/lib/agent-result.ts`: `RenderBlock` union (metrics/table/badges/markdown/image/audio/video/links), `AgentResult { status, agent, headline, blocks, summary, jobId?, provenance }`, `parseAgentResult` + `extractSummary`. Each agent has a synced copy at `src/agent-result.ts`.
+- [x] **On-chain Analytics** (flagship): REAL Base mainnet data — DexScreener (price/liq/vol/FDV, no key) + Base RPC `eth_call` (totalSupply/decimals/getCode) + Etherscan v2 verification. Structured metrics + computed risk badges + BaseScan links + 1 Venice verdict. Verified live: BRETT $1.1M liq, real FDV, on-chain supply. ChatGPT cannot do this.
+- [x] **Market Intelligence**: DexScreener live competitive landscape table + 1 web search + 1 synthesis. Structured.
+- [x] **Positioning**: grounded in prior agents' real data; 2 parallel Venice calls (no web search) → differentiation matrix table + name decision badges + playbook.
+- [x] **Visual Asset**: dropped web search; 1 brief call → parallel(image, announcement→TTS). Structured image + audio blocks. ~25s sync.
+- [x] **Video**: **two-phase async** — `POST /execute` does prompt+TTS, queues Venice Seedance, returns `{ status: processing, jobId }` fast (settles); new free `GET /result/:jobId` checks the queue once per call. No long buffered request → no 502.
+- [x] **Orchestrator**: `pay-agent.ts` `AgentResponse.jobId` + `pollAgentResult()`; `react-loop.ts` polls `/result` with `agent_progress` SSE, carries phase-1 txHash through; `context-summary.ts` + synthesis use `extractSummary` (forwards `summary` text, never base64).
+- [x] **Frontend**: `components/task/AgentResultView.tsx` renders all block types (metric cards, risk badges, tables, image/audio/video players, provenance links, markdown). `InlineExecution.tsx` renders each agent's rich result inline in its row; `agent_progress` event for render status; removed the duplicate bottom media section. New `agent_progress` SSE type.
+- [x] All agents `tsc` clean; frontend `tsc` + `eslint` clean.
+
+### Differentiation thesis (for the demo/submission)
+ARIA agents fuse live, verifiable on-chain/market data (DexScreener + Base RPC + BaseScan) with Venice's private multimodal generation, paid per-call via x402 — provenance-stamped, structured deliverables a chat session can't produce.
+
+### Next Session Should Start With
+1. **Redeploy all 5 agents to Railway** (they need the new code; commit + push).
+2. Set `ETHERSCAN_API_KEY` on Railway for on-chain analytics verification (optional — degrades gracefully).
+3. Run LUNARPUP demo: confirm no 502, rich per-agent rendering, video streams in when ready.
+4. Record demo video.

@@ -5,6 +5,7 @@ import { paymentMiddleware, x402ResourceServer } from '@x402/express'
 import { x402ExactEvmErc7710ServerScheme } from '@metamask/x402'
 import { HTTPFacilitatorClient } from '@x402/core/server'
 import OpenAI from 'openai'
+import type { AgentResult, RenderBlock, Tone } from './agent-result.js'
 
 const NETWORK_ID = 'eip155:84532'
 const PORT = process.env.PORT ?? 4003
@@ -60,120 +61,117 @@ async function veniceChat(messages: OpenAI.ChatCompletionMessageParam[]): Promis
   return res.choices[0].message.content ?? ''
 }
 
-async function veniceSearch(query: string): Promise<string> {
-  const res = await venice.chat.completions.create({
-    model: MODEL,
-    messages: [{ role: 'user', content: query }],
-    // @ts-expect-error Venice-specific
-    venice_parameters: { enable_web_search: 'auto' },
-  })
-  return res.choices[0].message.content ?? ''
+const toneFor = (feasibility?: string): Tone => {
+  const f = (feasibility ?? '').toUpperCase()
+  return f.includes('HIGH') ? 'good' : f.includes('LOW') ? 'bad' : 'warn'
 }
 
 app.post('/execute', async (req: Request, res: Response) => {
   const { task, context } = req.body as { task: string; context?: Record<string, unknown> }
   const start = Date.now()
+  const contextStr = JSON.stringify(context ?? {}).slice(0, 6000)
 
   try {
-    // STEP 1 — REASON: Analyse what the prior agents found and identify positioning levers
-    const situationAnalysis = await veniceChat([
-      {
-        role: 'system',
-        content: `You are a Web3 brand strategist. Analyse the market intelligence and technical data from prior agents and extract: (1) the 3 biggest weaknesses of existing competitors, (2) the 2 most underserved audience segments, (3) the single most defensible differentiator available to this project. Be specific and ruthless — no generic platitudes.`,
-      },
-      {
-        role: 'user',
-        content: `Task: ${task}
-
-Prior agent findings:
-${JSON.stringify(context ?? {}, null, 2)}`,
-      },
+    // Two Venice calls in parallel — both grounded in the REAL data the prior
+    // agents produced (live on-chain + market metrics in `context`). No web
+    // search: keeps the paid request fast (no 502) while staying differentiated
+    // because the strategy is anchored to verified competitor numbers, not vibes.
+    const [structuredRaw, narrative] = await Promise.all([
+      // (A) Structured strategy as JSON — drives the rich UI blocks.
+      veniceChat([
+        {
+          role: 'system',
+          content: `You are a ruthless Web3 brand strategist. Using the prior agents' REAL market + on-chain findings, decide ONE positioning. Return ONLY JSON:
+{
+  "positioning": "one-sentence north-star positioning",
+  "nameDecision": { "verdict": "KEEP" | "REBRAND", "name": "recommended name", "reason": "why" },
+  "feasibility": "HIGH" | "MEDIUM" | "LOW",
+  "tagline": "short memorable tagline",
+  "persona": "the specific target buyer (not 'crypto users')",
+  "differentiators": [ { "dimension": "e.g. Liquidity story", "thisProject": "...", "competitors": "..." } ],
+  "talkingPoints": ["...", "...", "..."]
+}
+Base every claim on the provided data. 3 differentiators.`,
+        },
+        { role: 'user', content: `Task: ${task}\n\nPrior agent findings (real data):\n${contextStr}` },
+      ]),
+      // (B) Launch narrative as markdown — the readable playbook.
+      veniceChat([
+        {
+          role: 'system',
+          content: `You are a senior Web3 brand strategist. Write a tight launch playbook in markdown grounded in the prior agents' real findings. Sections: ## Positioning Rationale, ## Key Differentiators (evidence-backed), ## What to Avoid, ## 30-Day Launch Narrative. Be opinionated and specific — cite real competitor numbers where given.`,
+        },
+        { role: 'user', content: `Task: ${task}\n\nPrior agent findings (real data):\n${contextStr}` },
+      ]),
     ])
 
-    // STEP 2 — SEARCH TOOL: Research successful positioning in this space
-    const positioningExamples = await veniceSearch(
-      `successful Web3 crypto brand positioning differentiation examples 2024 what made them stand out`
-    )
+    type Strategy = {
+      positioning?: string
+      nameDecision?: { verdict?: string; name?: string; reason?: string }
+      feasibility?: string
+      tagline?: string
+      persona?: string
+      differentiators?: { dimension?: string; thisProject?: string; competitors?: string }[]
+      talkingPoints?: string[]
+    }
+    let s: Strategy = {}
+    try {
+      s = JSON.parse(structuredRaw.match(/\{[\s\S]*\}/)?.[0] ?? '{}') as Strategy
+    } catch { /* fall back to narrative-only */ }
 
-    // STEP 3 — REASON: Generate 3 distinct positioning angles and evaluate them
-    const positioningOptions = await veniceChat([
-      {
-        role: 'system',
-        content: `You are a brand strategist. Based on the situation analysis and market examples, generate exactly 3 distinct positioning angles for this project. For each angle: (1) give it a name, (2) describe the core claim in one sentence, (3) identify the target audience, (4) rate its feasibility (HIGH/MEDIUM/LOW) given what we know about the project. Return as structured text.`,
-      },
-      {
-        role: 'user',
-        content: `Situation analysis:
-${situationAnalysis}
+    const blocks: RenderBlock[] = []
 
-Successful positioning examples from the market:
-${positioningExamples}
+    if (s.positioning) {
+      blocks.push({ kind: 'markdown', title: 'Recommended positioning', body: `**${s.positioning}**${s.tagline ? `\n\n_“${s.tagline}”_` : ''}` })
+    }
 
-Task: ${task}`,
-      },
-    ])
+    const decisionBadges: { label: string; tone: Tone; detail?: string }[] = []
+    if (s.nameDecision?.verdict) {
+      decisionBadges.push({
+        label: s.nameDecision.verdict === 'REBRAND' ? `Rebrand → ${s.nameDecision.name ?? '?'}` : 'Keep the name',
+        tone: s.nameDecision.verdict === 'REBRAND' ? 'warn' : 'good',
+        detail: s.nameDecision.reason,
+      })
+    }
+    if (s.feasibility) decisionBadges.push({ label: `Feasibility: ${s.feasibility}`, tone: toneFor(s.feasibility) })
+    if (s.persona) decisionBadges.push({ label: 'Target', tone: 'neutral', detail: s.persona })
+    if (decisionBadges.length > 0) blocks.push({ kind: 'badges', title: 'Strategic call', items: decisionBadges })
 
-    // STEP 4 — SEARCH TOOL: Validate the strongest angle — check if it's already taken
-    const validationQuery = await veniceChat([
-      {
-        role: 'system',
-        content: `From these 3 positioning options, identify the BEST one (highest feasibility + most differentiated). Then write a search query to check whether any existing project already owns that positioning. Return ONLY the search query string.`,
-      },
-      { role: 'user', content: positioningOptions },
-    ])
+    if (s.differentiators && s.differentiators.length > 0) {
+      blocks.push({
+        kind: 'table',
+        title: 'Differentiation matrix',
+        columns: ['Dimension', 'This project', 'Competitors'],
+        rows: s.differentiators.map((d) => [d.dimension ?? '—', d.thisProject ?? '—', d.competitors ?? '—']),
+      })
+    }
 
-    const validationResult = await veniceSearch(validationQuery.trim().replace(/^["']|["']$/g, ''))
+    if (s.talkingPoints && s.talkingPoints.length > 0) {
+      blocks.push({ kind: 'markdown', title: 'Key talking points', body: s.talkingPoints.map((t) => `- ${t}`).join('\n') })
+    }
 
-    // STEP 5 — GENERATE STRATEGY: Produce complete positioning playbook
-    const strategy = await veniceChat([
-      {
-        role: 'system',
-        content: `You are a senior Web3 brand strategist. Based on all research, produce a definitive positioning strategy. Be opinionated — pick ONE angle, not three. Format in markdown:
+    blocks.push({ kind: 'markdown', title: 'Launch playbook', body: narrative })
 
-## Recommended Positioning
-(One sentence. This is the north star.)
+    const headline = s.positioning
+      ? s.positioning.slice(0, 120)
+      : s.nameDecision?.verdict === 'REBRAND'
+      ? `Rebrand recommended → ${s.nameDecision.name}`
+      : 'Positioning strategy ready'
 
-## Brand Name Recommendation
-(If the current name has issues, recommend an alternative and explain why.)
-
-## Target Audience
-(Specific description — not "crypto users", but who exactly and why they care.)
-
-## Key Differentiators
-(3 specific claims, each backed by evidence from the research.)
-
-## Core Messaging
-(Tagline + 3-sentence elevator pitch + 5 key talking points.)
-
-## What to Avoid
-(Positioning traps that will make this indistinguishable from competitors.)
-
-## Launch Narrative
-(The story arc for the first 30 days.)`,
-      },
-      {
-        role: 'user',
-        content: `Task: ${task}
-
-Situation analysis:
-${situationAnalysis}
-
-Positioning options evaluated:
-${positioningOptions}
-
-Validation check (is the angle already taken?):
-${validationResult}
-
-Full context:
-${JSON.stringify(context ?? {})}`,
-      },
-    ])
+    const result: AgentResult = {
+      status: 'success',
+      agent: 'Positioning & Strategy',
+      headline,
+      blocks,
+      summary: `Positioning: ${s.positioning ?? '(see narrative)'}\nName: ${s.nameDecision?.verdict ?? '?'} ${s.nameDecision?.name ?? ''}\nTagline: ${s.tagline ?? ''}\nPersona: ${s.persona ?? ''}\n\nPlaybook:\n${narrative}`,
+      provenance: 'Strategy grounded in prior agents’ live on-chain + market data',
+    }
 
     res.json({
       status: 'success',
-      output: strategy,
-      outputType: 'text',
-      contentType: 'text/plain',
+      output: JSON.stringify(result),
+      outputType: 'json',
+      contentType: 'application/json',
       executionTime: (Date.now() - start) / 1000,
     })
   } catch (err) {

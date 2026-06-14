@@ -6,6 +6,8 @@ export type TaskEventType =
   | 'connected'
   | 'orchestrator_thinking'
   | 'agent_hired'
+  | 'agent_failed'
+  | 'agent_progress'
   | 'payment_confirmed'
   | 'finding_received'
   | 'privacy_log'

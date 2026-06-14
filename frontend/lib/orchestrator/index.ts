@@ -21,12 +21,14 @@ export async function runOrchestrator(
 
     // Retrieve stored permission context for this user (from ERC-7715 grant)
     let permissionContext: `0x${string}` | null = null
+    let permissionFrom: string | null = null
     try {
       const perm = await prisma.userPermission.findUnique({
         where: { userAddress },
       })
       if (perm && new Date(perm.expiresAt) > new Date()) {
         permissionContext = perm.permissionContext as `0x${string}`
+        permissionFrom = perm.permissionFrom ?? null
       }
     } catch { /* proceed without payments */ }
 
@@ -35,7 +37,7 @@ export async function runOrchestrator(
     emit('budget_update', { budgetSpent: 0, budgetRemaining: budgetUsdc })
 
     // Run the full ReAct loop (intelligent, constrained, gap-aware)
-    const synthesis = await runReactLoop(taskId, userPrompt, budget, permissionContext, userAddress)
+    const synthesis = await runReactLoop(taskId, userPrompt, budget, permissionContext, userAddress, permissionFrom)
 
     // Persist result
     await prisma.task.update({

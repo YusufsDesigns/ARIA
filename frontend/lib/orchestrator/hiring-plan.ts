@@ -12,7 +12,8 @@ export type FitLevel = 'good' | 'partial'
 export type HiringPlan = {
   hires: Array<{
     agent: ResolvedAgent
-    coversCapabilities: string[]
+    coversCapabilities: string[]   // what Venice assigned to this hire
+    allRegistryCapabilities: string[] // full capability set from on-chain registration
     fitLevel: FitLevel
     taskInstructions: string
   }>
@@ -86,7 +87,11 @@ export async function buildHiringPlan(
             agent: {
               id: id as `0x${string}`,
               name: (manifest.name as string) ?? 'Unknown Agent',
-              endpointUrl: manifest.endpointUrl as string,
+              endpointUrl: (() => {
+                // IPFS manifests may omit the https:// scheme — fetch() requires absolute URLs
+                const raw = (manifest.endpointUrl as string).replace(/\/$/, '')
+                return raw.startsWith('http') ? raw : `https://${raw}`
+              })(),
               priceUSDC: Number(onChain.pricePerTask) / 1e6,
             },
             taggedCapabilities: onChain.capabilities,
@@ -201,48 +206,75 @@ Return valid JSON only (no markdown, no explanation):
     }
   }
 
-  // ── STAGE 3: Health-check chosen agents ───────────────────────────────────
+  // ── STAGE 3: Resolve chosen agents — no pre-flight health check ──────────────
+  // Health checks were causing 30–68s delays and false negatives when Railway
+  // services were warming up. They are redundant: any real failure during the
+  // x402 call is caught by executeRound's try/catch which falls back to Venice.
+  // Removing the check means registered agents are always attempted.
   const hires: HiringPlan['hires'] = []
   const fallbacks: HiringPlan['fallbacks'] = [
     ...noAgentCapabilities.map(c => ({ capability: c, reason: 'no-agent-registered' as const })),
     ...poorFitCapabilities.map(c => ({ capability: c, reason: 'poor-fit' as const })),
   ]
 
-  await Promise.all(
-    planHires.map(async (hire) => {
-      const candidate = candidateMap.get(hire.agentId)
-      if (!candidate) {
-        for (const cap of hire.coversCapabilities) {
-          fallbacks.push({ capability: cap, reason: 'agent-unavailable' })
+  // Case-insensitive lookup — viem returns lowercase bytes32 but Venice (LLM)
+  // may return the same ID with different casing in its JSON output.
+  const candidateByLowerId = new Map<string, CandidateAgent>()
+  for (const [k, v] of candidateMap) candidateByLowerId.set(k.toLowerCase(), v)
+
+  // Name-based lookup — Venice sometimes returns the agent name instead of its ID
+  const candidateByName = new Map<string, CandidateAgent>()
+  for (const [, v] of candidateMap) {
+    const name = (v.manifest?.name as string ?? '').toLowerCase().trim()
+    if (name) candidateByName.set(name, v)
+  }
+
+  for (const hire of planHires) {
+    const candidate = candidateMap.get(hire.agentId)
+      ?? candidateByLowerId.get(hire.agentId.toLowerCase())
+      ?? candidateByName.get(hire.agentId.toLowerCase().trim())
+
+    if (!candidate) {
+      // Last resort: pick cheapest candidate covering ANY of these capabilities
+      let bestFallback: CandidateAgent | undefined
+      for (const cap of hire.coversCapabilities) {
+        const ids = capabilityToCandidateIds.get(cap) ?? []
+        for (const id of ids) {
+          const c = candidateMap.get(id) ?? candidateByLowerId.get(id.toLowerCase())
+          if (c && (!bestFallback || c.agent.priceUSDC < bestFallback.agent.priceUSDC)) {
+            bestFallback = c
+          }
         }
-        return
       }
 
-      let healthy = false
-      try {
-        const res = await fetch(`${candidate.agent.endpointUrl}/health`, {
-          signal: AbortSignal.timeout(3000),
+      if (bestFallback) {
+        // Venice returned a bad ID but we found a real candidate — use it
+        const candidate = bestFallback
+        hires.push({
+          agent: candidate.agent,
+          coversCapabilities: hire.coversCapabilities,
+          allRegistryCapabilities: candidate.taggedCapabilities,
+          fitLevel: hire.fitLevel ?? 'good',
+          taskInstructions: hire.taskInstructions,
         })
-        healthy = res.ok
-      } catch {
-        healthy = false
+        continue
       }
 
-      if (!healthy) {
-        for (const cap of hire.coversCapabilities) {
-          fallbacks.push({ capability: cap, reason: 'agent-unavailable' })
-        }
-        return
+      console.warn(`[hiring-plan] Venice returned unknown agentId "${hire.agentId}" — known ids: ${[...candidateMap.keys()].join(', ')}`)
+      for (const cap of hire.coversCapabilities) {
+        fallbacks.push({ capability: cap, reason: 'agent-unavailable' })
       }
+      continue
+    }
 
-      hires.push({
-        agent: candidate.agent,
-        coversCapabilities: hire.coversCapabilities,
-        fitLevel: hire.fitLevel ?? 'good',
-        taskInstructions: hire.taskInstructions,
-      })
+    hires.push({
+      agent: candidate.agent,
+      coversCapabilities: hire.coversCapabilities,
+      allRegistryCapabilities: candidate.taggedCapabilities,
+      fitLevel: hire.fitLevel ?? 'good',
+      taskInstructions: hire.taskInstructions,
     })
-  )
+  }
 
   return { hires, fallbacks }
 }

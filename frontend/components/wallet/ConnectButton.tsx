@@ -29,11 +29,25 @@ export function ConnectButton({ onConnected, budgetUsdc = 10, className, childre
 
   useEffect(() => {
     const stored = sessionStorage.getItem('aria_address')
-    if (stored) {
-      setAddress(stored)
-      setStatus('done')
-      onConnected(stored)
-    }
+    if (!stored) return
+    // Only restore the "connected" state if a grant actually exists in the DB for
+    // this address. Otherwise the green indicator would show from a stale session
+    // while no ERC-7715 permission is stored — payments would silently 402 / fall
+    // back to dev mode. If missing, clear the stale session and force a real connect.
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/delegate?address=${encodeURIComponent(stored)}`)
+        if (res.ok) {
+          setAddress(stored)
+          setStatus('done')
+          onConnected(stored)
+        } else {
+          sessionStorage.removeItem('aria_address')
+        }
+      } catch {
+        sessionStorage.removeItem('aria_address')
+      }
+    })()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const connect = async () => {
@@ -106,19 +120,33 @@ export function ConnectButton({ onConnected, budgetUsdc = 10, className, childre
         }])
 
         const grant = grantedPermissions[0]
+        if (!grant?.context || grant.context === '0x') {
+          throw new Error('Wallet returned an empty permission context')
+        }
 
-        await fetch('/api/delegate', {
+        const storeRes = await fetch('/api/delegate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             userAddress,
             permissionContext: grant.context,
+            // grant.from = the user's smart account address that granted the permission.
+            // Passed to createx402DelegationProvider as `from` per the MetaMask docs pattern.
+            permissionFrom: grant.from ?? userAddress,
             expiresAt: new Date(expiry * 1000).toISOString(),
             periodAmountUsdc: budgetUsdc,
           }),
         })
-      } catch {
-        // ERC-7715 not supported — store minimal context, orchestrator uses Venice direct mode
+        if (!storeRes.ok) {
+          throw new Error(`Failed to store permission (${storeRes.status})`)
+        }
+        console.info('[ARIA] ERC-7715 grant stored. from:', grant.from ?? userAddress)
+      } catch (grantErr) {
+        // ERC-7715 not supported / rejected — store minimal context, orchestrator
+        // uses Venice direct mode (NO real x402 payments). Surface this clearly:
+        // this is the difference between a real on-chain demo and dev mode.
+        console.error('[ARIA] ERC-7715 advanced permission grant failed — falling back to dev mode (no real payments):', grantErr)
+        setError('Budget approval (ERC-7715) was not granted — running in preview mode without on-chain payments. Use MetaMask with Smart Accounts enabled for real x402 payments.')
         await fetch('/api/delegate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -128,7 +156,7 @@ export function ConnectButton({ onConnected, budgetUsdc = 10, className, childre
             expiresAt: new Date(Date.now() + 86400000).toISOString(),
             periodAmountUsdc: budgetUsdc,
           }),
-        })
+        }).catch(() => {})
       }
 
       sessionStorage.setItem('aria_address', userAddress)

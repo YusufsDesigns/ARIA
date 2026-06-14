@@ -42,6 +42,7 @@ model AgentCall {
 model UserPermission {
   userAddress       String   @id
   permissionContext String
+  permissionFrom    String?
   expiresAt         DateTime
   periodAmountUsdc  Float
   updatedAt         DateTime @updatedAt

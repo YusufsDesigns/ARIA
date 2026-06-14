@@ -3,10 +3,11 @@ import { prisma } from '@/lib/prisma'
 
 // POST /api/delegate — store user permission context after ERC-7715 grant
 export async function POST(req: NextRequest) {
-  const { userAddress, permissionContext, expiresAt, periodAmountUsdc } =
+  const { userAddress, permissionContext, permissionFrom, expiresAt, periodAmountUsdc } =
     (await req.json()) as {
       userAddress: string
       permissionContext: string
+      permissionFrom?: string
       expiresAt: string
       periodAmountUsdc: number
     }
@@ -22,12 +23,14 @@ export async function POST(req: NextRequest) {
     where: { userAddress },
     update: {
       permissionContext,
+      permissionFrom: permissionFrom ?? null,
       expiresAt: new Date(expiresAt),
       periodAmountUsdc,
     },
     create: {
       userAddress,
       permissionContext,
+      permissionFrom: permissionFrom ?? null,
       expiresAt: new Date(expiresAt),
       periodAmountUsdc,
     },

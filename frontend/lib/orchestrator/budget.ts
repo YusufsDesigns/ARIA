@@ -20,16 +20,18 @@ export class BudgetTracker {
   async recordPayment(priceUSDC: number, _agentName: string, _txHash: string) {
     this.spent += priceUSDC
 
-    await prisma.task.update({
-      where: { id: this.taskId },
-      data: { totalSpent: this.spent },
-    })
-
+    // Emit immediately — UI updates the instant payment is recorded, not after DB
     emitTaskEvent(this.taskId, {
       type: 'budget_update',
       payload: { budgetSpent: this.spent, budgetRemaining: this.remaining },
       timestamp: Date.now(),
     })
+
+    // DB write is non-blocking — UI doesn't depend on it completing
+    prisma.task.update({
+      where: { id: this.taskId },
+      data: { totalSpent: this.spent },
+    }).catch(() => {})
   }
 
   isBudgetExhausted(): boolean {

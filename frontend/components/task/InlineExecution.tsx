@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Components } from 'react-markdown'
+import { AgentResultView } from './AgentResultView'
 
 type TaskEvent = {
   type: string
@@ -37,6 +38,20 @@ type AgentStep = {
   status: 'running' | 'done' | 'failed'
   finding?: string
   outputType?: string
+  progress?: string
+  isPaid: boolean
+  isFallback: boolean
+}
+
+// True when a finding is a structured ARIA AgentResult (has a `blocks` array).
+function isStructured(finding?: string, outputType?: string): boolean {
+  if (!finding || outputType !== 'json') return false
+  try {
+    const o = JSON.parse(finding)
+    return Array.isArray(o?.blocks)
+  } catch {
+    return false
+  }
 }
 
 type Props = {
@@ -46,7 +61,7 @@ type Props = {
 
 const BASESCAN = 'https://sepolia.basescan.org/tx/'
 
-// ─── Markdown renderer with full styling ────────────────────────────────────
+// ─── Markdown renderer ────────────────────────────────────────────────────────
 
 const mdComponents: Components = {
   h1: ({ children }) => (
@@ -127,40 +142,35 @@ function MarkdownContent({ content }: { content: string }) {
   )
 }
 
-// ─── Rich media renderer for JSON agent outputs ──────────────────────────────
+// ─── Rich media renderer ──────────────────────────────────────────────────────
 
 type RichMediaPayload = {
-  // visual-asset
   image?: string
   imageUrl?: string
   imagePrompt?: string
-  brandIdentity?: unknown
   audioScript?: string
   audio?: string
   audioMimeType?: string
-  // video-production
   videoUrl?: string
   videoBase64?: string
   videoMimeType?: string
   videoPrompt?: string
   durationSeconds?: number
   videoError?: string
+  text?: string
 }
 
 function RichMediaOutput({ data }: { data: RichMediaPayload }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Image */}
       {(data.image || data.imageUrl) && (
         <div>
-          <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#FF6B35', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>
-            Generated Banner
-          </p>
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#FF6B35', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>Generated Image</p>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={data.imageUrl ?? `data:image/png;base64,${data.image}`}
-            alt="Generated launch banner"
-            style={{ width: '100%', maxWidth: 600, borderRadius: 8, border: '1px solid #2A2A2A', display: 'block' }}
+            alt="Generated output"
+            style={{ width: '100%', maxWidth: 500, borderRadius: 8, border: '1px solid #2A2A2A', display: 'block' }}
           />
           {data.imagePrompt && (
             <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#555', marginTop: 6, lineHeight: 1.5, fontStyle: 'italic' }}>
@@ -169,18 +179,10 @@ function RichMediaOutput({ data }: { data: RichMediaPayload }) {
           )}
         </div>
       )}
-
-      {/* Audio announcement */}
       {data.audio && (
         <div>
-          <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#FF6B35', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>
-            Launch Announcement (TTS)
-          </p>
-          <audio
-            controls
-            src={`data:${data.audioMimeType ?? 'audio/mpeg'};base64,${data.audio}`}
-            style={{ width: '100%', accentColor: '#FF6B35' }}
-          />
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#FF6B35', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>Audio Announcement</p>
+          <audio controls src={`data:${data.audioMimeType ?? 'audio/mpeg'};base64,${data.audio}`} style={{ width: '100%', accentColor: '#FF6B35' }} />
           {data.audioScript && (
             <div style={{ marginTop: 8, padding: '10px 14px', background: '#0D0D0D', border: '1px solid #1A1A1A', borderRadius: 6 }}>
               <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#888', lineHeight: 1.6, fontStyle: 'italic' }}>
@@ -190,32 +192,176 @@ function RichMediaOutput({ data }: { data: RichMediaPayload }) {
           )}
         </div>
       )}
-
-      {/* Video */}
       {(data.videoUrl || data.videoBase64) && !data.videoError && (
         <div>
           <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#FF6B35', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>
             Launch Video {data.durationSeconds ? `(${data.durationSeconds}s)` : ''}
           </p>
           <video
-            controls
-            playsInline
+            controls playsInline
             src={data.videoUrl ?? `data:${data.videoMimeType ?? 'video/mp4'};base64,${data.videoBase64}`}
-            style={{ width: '100%', maxWidth: 640, borderRadius: 8, border: '1px solid #2A2A2A', display: 'block', background: '#000' }}
+            style={{ width: '100%', maxWidth: 580, borderRadius: 8, border: '1px solid #2A2A2A', display: 'block', background: '#000' }}
           />
-          {data.videoPrompt && (
-            <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#555', marginTop: 6, lineHeight: 1.5, fontStyle: 'italic' }}>
-              Prompt: {data.videoPrompt}
+        </div>
+      )}
+      {data.videoError && (
+        <div style={{ padding: '10px 14px', background: '#1A0000', border: '1px solid #3A1A1A', borderRadius: 6 }}>
+          <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#EF4444' }}>Video generation failed: {data.videoError}</p>
+        </div>
+      )}
+      {data.text && <MarkdownContent content={data.text} />}
+    </div>
+  )
+}
+
+function FindingRenderer({ finding, outputType }: { finding?: string; outputType?: string }) {
+  if (!finding) return null
+
+  if (outputType === 'json') {
+    let data: RichMediaPayload
+    try { data = JSON.parse(finding) as RichMediaPayload } catch { return <MarkdownContent content={finding} /> }
+    return <RichMediaOutput data={data} />
+  }
+
+  if (outputType === 'image') {
+    const src = finding.startsWith('data:') || finding.startsWith('http') ? finding : `data:image/png;base64,${finding}`
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={src} alt="Generated output" style={{ width: '100%', maxWidth: 500, borderRadius: 8, border: '1px solid #2A2A2A' }} />
+  }
+
+  if (outputType === 'audio') {
+    const src = finding.startsWith('data:') ? finding : `data:audio/mpeg;base64,${finding}`
+    return <audio controls src={src} style={{ width: '100%', accentColor: '#FF6B35' }} />
+  }
+
+  if (outputType === 'video') {
+    const src = finding.startsWith('http') ? finding : `data:video/mp4;base64,${finding}`
+    return <video controls playsInline src={src} style={{ width: '100%', maxWidth: 580, borderRadius: 8, border: '1px solid #2A2A2A', background: '#000' }} />
+  }
+
+  return <MarkdownContent content={finding} />
+}
+
+// ─── Shorten a text finding to a preview snippet ─────────────────────────────
+
+function shortPreview(text: string, max = 120): string {
+  if (!text) return ''
+  const flat = text.replace(/\n+/g, ' ').replace(/#+\s*/g, '').replace(/\*\*/g, '').trim()
+  if (flat.length <= max) return flat
+  return flat.slice(0, max).trimEnd() + '...'
+}
+
+// ─── Agent row — expandable finding preview (dim), full content in synthesis ──
+
+function AgentRow({ agent }: { agent: AgentStep }) {
+  const structured = isStructured(agent.finding, agent.outputType)
+  const [expanded, setExpanded] = useState(false)
+  const hasFinding = !!agent.finding
+  // Structured results render their rich view always (no expand gate needed).
+  const showRich = structured && agent.status !== 'running'
+
+  const isFallback = agent.isFallback
+  const bgColor = agent.status === 'failed'
+    ? '#0D0000'
+    : agent.status === 'done' && agent.isPaid
+    ? '#0D1500'
+    : isFallback && agent.status === 'done'
+    ? '#0A0900'
+    : '#0A0A0A'
+  const borderColor = agent.status === 'failed'
+    ? '#EF444422'
+    : agent.status === 'done' && agent.isPaid
+    ? '#22C55E22'
+    : isFallback && agent.status === 'done'
+    ? '#FF6B3518'
+    : '#1A1A1A'
+  const nameColor = agent.status === 'failed' ? '#EF4444' : '#DDD'
+  const capColor = '#666'
+
+  const statusIcon = agent.status === 'running'
+    ? null
+    : agent.status === 'failed'
+    ? <span style={{ color: '#EF4444', fontSize: 11, flexShrink: 0 }}>✗</span>
+    : agent.isPaid
+    ? <span style={{ color: '#22C55E', fontSize: 11, flexShrink: 0 }}>✓</span>
+    : <span style={{ color: '#444', fontSize: 11, flexShrink: 0 }}>↪</span>
+
+  // Preview text shown while collapsed. Running agents show live render progress;
+  // text findings show a snippet; structured results need no preview (rendered below).
+  const preview = agent.status === 'running' && agent.progress
+    ? agent.progress
+    : hasFinding && agent.outputType === 'text'
+    ? shortPreview(agent.finding!)
+    : null
+  // Only text findings use the click-to-expand affordance.
+  const canExpand = hasFinding && !structured
+
+  return (
+    <div style={{ background: bgColor, border: `1px solid ${borderColor}`, borderRadius: 6, overflow: 'hidden', marginBottom: 3 }}>
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px',
+          cursor: canExpand ? 'pointer' : 'default',
+        }}
+        onClick={() => canExpand && setExpanded(e => !e)}
+      >
+        {/* Status */}
+        <span style={{ flexShrink: 0, width: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {agent.status === 'running' ? (
+            <span style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+              {[0, 1, 2].map(i => (
+                <span key={i} style={{ width: 3, height: 3, borderRadius: '50%', background: '#FF6B35', animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite` }} />
+              ))}
+            </span>
+          ) : statusIcon}
+        </span>
+
+        {/* Name + capability + preview */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: 12, color: nameColor, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {agent.agentName}
+          </p>
+          <p style={{ fontFamily: 'var(--font-body)', fontSize: 10, color: capColor, marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {agent.capability}
+          </p>
+          {/* Preview visible when collapsed */}
+          {preview && !expanded && (
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 10, color: '#777', marginTop: 3, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {preview}
             </p>
           )}
         </div>
+
+        {/* Right badge */}
+        {agent.isPaid && agent.status !== 'failed' ? (
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: '#FF6B35', flexShrink: 0 }}>
+            {agent.amount.toFixed(2)} USDC
+          </span>
+        ) : isFallback ? (
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#FF6B35', letterSpacing: '0.08em', textTransform: 'uppercase', flexShrink: 0, border: '1px solid #FF6B3530', padding: '2px 6px', borderRadius: 3 }}>
+            orchestrator
+          </span>
+        ) : null}
+
+        {/* Expand toggle — only for plain-text findings */}
+        {canExpand && (
+          <span style={{ fontSize: 8, color: '#555', transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 150ms', flexShrink: 0 }}>▶</span>
+        )}
+      </div>
+
+      {/* Structured results render their full rich view inline (the showcase) */}
+      {showRich && (
+        <div style={{ padding: '16px 16px 18px', borderTop: '1px solid #161616', background: '#070707' }}>
+          <AgentResultView output={agent.finding!} />
+        </div>
       )}
 
-      {/* Video error (partial result) */}
-      {data.videoError && (
-        <div style={{ padding: '10px 14px', background: '#1A0000', border: '1px solid #3A1A1A', borderRadius: 6 }}>
-          <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#EF4444' }}>
-            Video generation failed: {data.videoError}
+      {/* Plain-text findings (Venice fallbacks) keep the click-to-expand snippet */}
+      {canExpand && expanded && (
+        <div style={{ padding: '10px 14px 14px', borderTop: '1px solid #111', background: '#080808' }}>
+          <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#999', lineHeight: 1.7, fontStyle: 'italic' }}>
+            {agent.finding!.replace(/#+\s*/g, '').replace(/\*\*/g, '').slice(0, 500)}
+            {agent.finding!.length > 500 ? '…' : ''}
           </p>
         </div>
       )}
@@ -223,49 +369,70 @@ function RichMediaOutput({ data }: { data: RichMediaPayload }) {
   )
 }
 
-// ─── Generic finding renderer — dispatches by outputType ─────────────────────
+// ─── Collapsible section ──────────────────────────────────────────────────────
 
-function FindingRenderer({ finding, outputType }: { finding?: string; outputType?: string }) {
-  if (!finding) return null
+function CollapsibleSection({
+  label,
+  children,
+  defaultOpen = true,
+  statusLine,
+  running = false,
+}: {
+  label: string
+  children: React.ReactNode
+  defaultOpen?: boolean
+  statusLine?: string
+  running?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
 
-  // JSON output from visual-asset or video-production
-  if (outputType === 'json') {
-    let data: RichMediaPayload
-    try {
-      data = JSON.parse(finding) as RichMediaPayload
-    } catch {
-      return <MarkdownContent content={finding} />
-    }
-    return <RichMediaOutput data={data} />
-  }
+  return (
+    <div style={{ border: '1px solid #2A2A2A', borderRadius: 8, overflow: 'hidden' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: '100%', background: '#0D0D0D', padding: '8px 16px',
+          borderBottom: open ? '1px solid #2A2A2A' : 'none',
+          display: 'flex', alignItems: 'center', gap: 10,
+          cursor: 'pointer', border: 'none', textAlign: 'left',
+        }}
+      >
+        <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#555', letterSpacing: '0.06em', transition: 'transform 150ms', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
+        <span style={{ fontFamily: 'var(--font-display)', fontSize: 10, color: '#FF6B35', letterSpacing: '0.15em', textTransform: 'uppercase', flex: 1 }}>{label}</span>
+        {!open && statusLine && (
+          <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#555', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {statusLine}
+          </span>
+        )}
+        {running && (
+          <span style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+            {[0, 1, 2].map(i => (
+              <span key={i} style={{ width: 4, height: 4, borderRadius: '50%', background: '#FF6B35', animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite` }} />
+            ))}
+          </span>
+        )}
+      </button>
+      {open && <div style={{ padding: '12px 16px' }}>{children}</div>}
+      <style>{`@keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:1} }`}</style>
+    </div>
+  )
+}
 
-  // Raw image (base64 or URL)
-  if (outputType === 'image') {
-    const src = finding.startsWith('data:') || finding.startsWith('http')
-      ? finding
-      : `data:image/png;base64,${finding}`
-    return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img src={src} alt="Agent output" style={{ width: '100%', maxWidth: 600, borderRadius: 8, border: '1px solid #2A2A2A' }} />
-    )
-  }
+function SectionHeader({ label }: { label: string }) {
+  return (
+    <div style={{ background: '#0D0D0D', padding: '8px 16px', borderBottom: '1px solid #2A2A2A' }}>
+      <p style={{ fontFamily: 'var(--font-display)', fontSize: 10, color: '#FF6B35', letterSpacing: '0.15em', textTransform: 'uppercase' }}>{label}</p>
+    </div>
+  )
+}
 
-  // Raw audio base64
-  if (outputType === 'audio') {
-    const src = finding.startsWith('data:') ? finding : `data:audio/mpeg;base64,${finding}`
-    return <audio controls src={src} style={{ width: '100%', accentColor: '#FF6B35' }} />
-  }
-
-  // Raw video (URL or base64)
-  if (outputType === 'video') {
-    const src = finding.startsWith('http') ? finding : `data:video/mp4;base64,${finding}`
-    return (
-      <video controls playsInline src={src} style={{ width: '100%', maxWidth: 640, borderRadius: 8, border: '1px solid #2A2A2A', background: '#000' }} />
-    )
-  }
-
-  // Default: treat as markdown text
-  return <MarkdownContent content={finding} />
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ border: '1px solid #2A2A2A', borderRadius: 8, overflow: 'hidden' }}>
+      <SectionHeader label={label} />
+      <div style={{ padding: '12px 16px' }}>{children}</div>
+    </div>
+  )
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -274,38 +441,42 @@ export function InlineExecution({ taskId, onBudgetUpdate }: Props) {
   const [thoughts, setThoughts] = useState<string[]>([])
   const [agents, setAgents] = useState<AgentStep[]>([])
   const [payments, setPayments] = useState<Payment[]>([])
-  const [privacyLogs, setPrivacyLogs] = useState<string[]>([])
+  const [veniceCallCount, setVeniceCallCount] = useState(0)
   const [synthesis, setSynthesis] = useState<{ content: string; outputType?: string } | null>(null)
   const [done, setDone] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
-  const eventSourceRef = useRef<EventSource | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const es = new EventSource(`/api/task/${taskId}/stream`)
-    eventSourceRef.current = es
 
     es.onmessage = (e) => {
       const event: TaskEvent = JSON.parse(e.data)
       switch (event.type) {
         case 'orchestrator_thinking':
-          if (event.payload.message) {
-            setThoughts((prev) => [...prev, event.payload.message!])
-          }
+          if (event.payload.message) setThoughts(prev => [...prev, event.payload.message!])
           break
-        case 'agent_hired':
-          setAgents((prev) => [
+
+        case 'agent_hired': {
+          const amountUsdc = event.payload.amountUsdc ?? 0
+          const name = event.payload.agentName ?? 'Unknown'
+          const isFallback = name.startsWith('↪') || amountUsdc === 0
+          setAgents(prev => [
             ...prev,
             {
-              agentName: event.payload.agentName ?? 'Unknown',
+              agentName: name,
               capability: event.payload.capability ?? '',
-              amount: event.payload.amountUsdc ?? 0,
+              amount: amountUsdc,
               status: 'running',
+              isPaid: amountUsdc > 0,
+              isFallback,
             },
           ])
           break
+        }
+
         case 'payment_confirmed':
-          setPayments((prev) => [
+          setPayments(prev => [
             ...prev,
             {
               agent: event.payload.agentName ?? 'Agent',
@@ -316,36 +487,61 @@ export function InlineExecution({ taskId, onBudgetUpdate }: Props) {
             },
           ])
           break
-        case 'finding_received':
-          setAgents((prev) =>
-            prev.map((a) =>
-              a.capability === event.payload.capability
-                ? {
-                    ...a,
-                    status: 'done',
-                    finding: event.payload.finding ?? event.payload.output,
-                    outputType: event.payload.outputType,
-                  }
+
+        case 'agent_failed':
+          // Mark the paid agent that failed (x402 error) as failed in the plan
+          setAgents(prev =>
+            prev.map(a =>
+              a.capability === event.payload.capability && a.isPaid && a.status === 'running'
+                ? { ...a, status: 'failed' }
                 : a
             )
           )
           break
-        case 'privacy_log':
-          if (event.payload.message) {
-            setPrivacyLogs((prev) => [...prev, event.payload.message!])
-          }
+
+        case 'agent_progress': {
+          // Async agents (e.g. Video) stream render progress while we poll /result
+          const msg = event.payload.message
+          setAgents(prev => {
+            const running = [...prev].reverse().find(
+              a => a.capability === event.payload.capability && a.status === 'running'
+            )
+            return prev.map(a => (a === running ? { ...a, progress: msg } : a))
+          })
           break
+        }
+
+        case 'finding_received': {
+          const finding = event.payload.finding ?? event.payload.output
+          const outputType = event.payload.outputType
+          // Update the most-recently-added 'running' entry for this capability.
+          // This handles the case where a paid agent failed and a fallback was added
+          // — we want to update the fallback row, not the already-failed paid row.
+          setAgents(prev => {
+            const running = [...prev].reverse().find(
+              a => a.capability === event.payload.capability && a.status === 'running'
+            )
+            return prev.map(a =>
+              a === running ? { ...a, status: 'done', finding, outputType } : a
+            )
+          })
+          break
+        }
+
+        case 'privacy_log':
+          setVeniceCallCount(n => n + 1)
+          break
+
         case 'budget_update':
           onBudgetUpdate?.(event.payload.budgetSpent ?? 0)
           break
+
         case 'synthesis_complete':
-          setSynthesis({
-            content: event.payload.finding ?? event.payload.output ?? '',
-            outputType: event.payload.outputType,
-          })
+          setSynthesis({ content: event.payload.finding ?? event.payload.output ?? '', outputType: event.payload.outputType })
           setDone(true)
           es.close()
           break
+
         case 'task_failed':
           setFailed(event.payload.message ?? 'Unknown error')
           setDone(true)
@@ -356,156 +552,95 @@ export function InlineExecution({ taskId, onBudgetUpdate }: Props) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
 
-    es.onerror = () => {
-      if (!done) es.close()
-    }
-
+    es.onerror = () => { if (!done) es.close() }
     return () => es.close()
   }, [taskId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const doneAgents = agents.filter((a) => a.status === 'done' && a.finding)
+  const lastThought = thoughts[thoughts.length - 1]
+  const paidPayments = payments.filter(p => p.amount > 0)
+  const doneCount = agents.filter(a => a.status === 'done').length
 
   return (
-    <div style={{ width: '100%', maxWidth: 760, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
+    <div style={{ width: '100%', maxWidth: 760, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-      {/* Orchestrator thinking */}
+      {/* Orchestrator reasoning — collapsible, collapses once done */}
       {thoughts.length > 0 && (
-        <Section label="ARIA ORCHESTRATOR">
+        <CollapsibleSection
+          label="ARIA ORCHESTRATOR"
+          defaultOpen={!done}
+          statusLine={lastThought}
+          running={!done}
+        >
           {thoughts.map((t, i) => (
-            <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '6px 0', borderBottom: '1px solid #1A1A1A' }}>
-              <span style={{ color: '#FF6B35', fontSize: 14, marginTop: 1 }}>›</span>
-              <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: '#CCC', lineHeight: 1.5 }}>{t}</p>
+            <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '5px 0', borderBottom: '1px solid #111' }}>
+              <span style={{ color: '#FF6B35', fontSize: 14, marginTop: 1, flexShrink: 0 }}>›</span>
+              <p style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: '#AAA', lineHeight: 1.5 }}>{t}</p>
             </div>
           ))}
           {!done && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '8px 0' }}>
-              {[0, 1, 2].map((i) => (
-                <span key={i} style={{
-                  width: 6, height: 6, borderRadius: '50%', background: '#FF6B35',
-                  animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
-                }} />
+              {[0, 1, 2].map(i => (
+                <span key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: '#FF6B35', animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite` }} />
               ))}
-              <style>{`@keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:1} }`}</style>
             </div>
           )}
-        </Section>
+        </CollapsibleSection>
       )}
 
-      {/* Agent plan */}
+      {/* Unified agent plan — paid agents + orchestrator fallbacks in one list */}
       {agents.length > 0 && (
-        <Section label="AGENT PLAN">
-          {agents.map((a, i) => (
-            <div key={i} style={{
-              borderRadius: 6,
-              background: a.status === 'done' ? '#0D1A0D' : '#1A1A1A',
-              border: `1px solid ${a.status === 'done' ? '#22C55E33' : a.status === 'failed' ? '#EF444433' : '#4A4A4A'}`,
-              marginBottom: 6,
-              overflow: 'hidden',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px' }}>
-                <span style={{ fontSize: 16, color: a.status === 'done' ? '#22C55E' : a.status === 'failed' ? '#EF4444' : '#FF6B35' }}>
-                  {a.status === 'done' ? '✓' : a.status === 'failed' ? '✗' : '⟳'}
-                </span>
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontFamily: 'var(--font-display)', fontSize: 13, color: '#FFF' }}>{a.agentName}</p>
-                  <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#888', marginTop: 2 }}>{a.capability}</p>
-                </div>
-                <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#FF6B35' }}>
-                  {a.amount.toFixed(2)} USDC
-                </span>
-              </div>
-            </div>
-          ))}
-        </Section>
-      )}
-
-      {/* Payment ledger */}
-      {payments.length > 0 && (
-        <Section label="LIVE PAYMENTS">
-          {payments.map((p, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #1A1A1A' }}>
-              <span style={{ color: '#22C55E', fontSize: 10 }}>●</span>
-              <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: '#CCC', flex: 1 }}>{p.agent}</span>
-              <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: '#FF6B35', fontVariantNumeric: 'tabular-nums' }}>
-                {p.amount.toFixed(2)} USDC
-              </span>
-              {p.txHash && (
-                <a
-                  href={`${BASESCAN}${p.txHash}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#3B82F6' }}
-                >
-                  ↗ BaseScan
-                </a>
-              )}
-            </div>
-          ))}
-        </Section>
-      )}
-
-      {/* Per-agent findings — renders inline as each agent completes */}
-      {doneAgents.map((a, i) => (
-        <Section key={i} label={`${a.agentName.toUpperCase()} — FINDINGS`}>
-          <FindingRenderer finding={a.finding} outputType={a.outputType} />
-        </Section>
-      ))}
-
-      {/* Privacy section */}
-      {privacyLogs.length > 0 && (
-        <Section label="PRIVACY PROTECTION">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-            <div style={{ background: '#0D0000', border: '1px solid #3A1A1A', padding: '16px', opacity: 0.7 }}>
-              <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#EF4444', marginBottom: 12 }}>
-                Standard AI Platforms
-              </p>
-              {['Your prompts logged', 'Data used for model training', 'Competitor data exposed', 'Business strategy visible to AI company'].map((item) => (
-                <div key={item} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                  <span style={{ color: '#EF4444', fontSize: 12, flexShrink: 0 }}>✗</span>
-                  <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#666' }}>{item}</p>
-                </div>
-              ))}
-            </div>
-            <div style={{ background: '#001A0D', border: '1px solid #22C55E44', padding: '16px' }}>
-              <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#22C55E', marginBottom: 12 }}>
-                ARIA × Venice AI
-              </p>
-              {['Zero data retention', 'Zero training on your data', 'Private by architectural design', 'Privacy receipt after every task'].map((item) => (
-                <div key={item} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                  <span style={{ color: '#22C55E', fontSize: 12, flexShrink: 0 }}>✓</span>
-                  <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#ccc' }}>{item}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ borderTop: '1px solid #1A1A1A', paddingTop: 12 }}>
-            <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>
-              Live Zero-Retention Log
+        <div style={{ border: '1px solid #2A2A2A', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ background: '#0D0D0D', padding: '8px 16px', borderBottom: '1px solid #2A2A2A', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: 10, color: '#FF6B35', letterSpacing: '0.15em', textTransform: 'uppercase', flex: 1 }}>
+              AGENT PLAN
             </p>
-            {privacyLogs.map((log, i) => (
-              <div key={i} style={{ display: 'flex', gap: 8, padding: '4px 0' }}>
-                <span style={{ fontSize: 12 }}>🔒</span>
-                <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#555' }}>{log}</p>
+            <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#444' }}>
+              {doneCount}/{agents.length} complete
+            </span>
+            {!done && agents.some(a => a.status === 'running') && (
+              <span style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+                {[0, 1, 2].map(i => (
+                  <span key={i} style={{ width: 4, height: 4, borderRadius: '50%', background: '#FF6B35', animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite` }} />
+                ))}
+              </span>
+            )}
+          </div>
+          <div style={{ padding: '8px 12px' }}>
+            {agents.map((a, i) => <AgentRow key={i} agent={a} />)}
+          </div>
+        </div>
+      )}
+
+      {/* Live payments — real x402 payments only */}
+      {paidPayments.length > 0 && (
+        <div style={{ border: '1px solid #1A1A1A', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ background: '#080808', padding: '6px 14px', borderBottom: '1px solid #151515' }}>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#333', letterSpacing: '0.15em', textTransform: 'uppercase' }}>x402 PAYMENTS</p>
+          </div>
+          <div style={{ padding: '8px 14px' }}>
+            {paidPayments.map((p, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: i < paidPayments.length - 1 ? '1px solid #111' : 'none' }}>
+                <span style={{ color: '#22C55E', fontSize: 8, flexShrink: 0 }}>●</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#888', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.agent}</p>
+                </div>
+                <span style={{ fontFamily: 'var(--font-display)', fontSize: 12, fontWeight: 700, color: '#FF6B35', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                  {p.amount.toFixed(2)} USDC
+                </span>
+                {p.txHash ? (
+                  <a href={`${BASESCAN}${p.txHash}`} target="_blank" rel="noopener noreferrer"
+                    style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#3B82F6', flexShrink: 0, letterSpacing: '0.06em' }}>
+                    ↗ BaseScan
+                  </a>
+                ) : (
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#22C55E', flexShrink: 0, letterSpacing: '0.06em' }}>
+                    ✓ Paid
+                  </span>
+                )}
               </div>
             ))}
           </div>
-
-          {done && (
-            <div style={{ marginTop: 16, background: '#050505', border: '1px solid #1A1A1A', padding: '16px', fontFamily: 'monospace', fontSize: 11, color: '#555', lineHeight: 1.8 }}>
-              <p style={{ color: '#FF6B35', marginBottom: 8, fontFamily: 'var(--font-display)', fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase' }}>
-                Task Privacy Receipt
-              </p>
-              <p>Task ID: {taskId.slice(0, 8)}…</p>
-              <p>Venice AI Calls: {privacyLogs.length}</p>
-              <p>Data Retained: <span style={{ color: '#22C55E' }}>0 bytes</span></p>
-              <p>Training Data Shared: <span style={{ color: '#22C55E' }}>None</span></p>
-              <p style={{ marginTop: 8, color: '#333', fontFamily: 'var(--font-body)', fontSize: 10 }}>
-                All data processed by Venice zero-retention infrastructure and permanently deleted.
-              </p>
-            </div>
-          )}
-        </Section>
+        </div>
       )}
 
       {/* Error */}
@@ -515,29 +650,52 @@ export function InlineExecution({ taskId, onBudgetUpdate }: Props) {
         </Section>
       )}
 
-      {/* Final synthesis */}
+      {/* Final synthesis — the star of the show */}
       {synthesis && (
-        <Section label="FINAL SYNTHESIS">
-          <FindingRenderer finding={synthesis.content} outputType={synthesis.outputType ?? 'text'} />
-        </Section>
+        <div style={{ border: '1px solid #FF6B3540', borderRadius: 8, overflow: 'hidden', background: '#070400' }}>
+          <div style={{ background: '#0F0800', padding: '14px 20px', borderBottom: '1px solid #FF6B3520', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 18 }}>✦</span>
+            <div>
+              <p style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: '#FF6B35', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
+                ARIA&apos;S ANSWER
+              </p>
+              <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#444', marginTop: 3 }}>
+                Synthesised from {agents.filter(a => a.isPaid && a.status === 'done').length} specialist agents · all findings combined
+              </p>
+            </div>
+          </div>
+          <div style={{ padding: '24px 24px' }}>
+            <FindingRenderer finding={synthesis.content} outputType={synthesis.outputType ?? 'text'} />
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#444', marginTop: 18 }}>
+              Each agent&apos;s full output — live metrics, generated media, sources — is shown in the Agent Plan above.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Privacy receipt */}
+      {done && veniceCallCount > 0 && (
+        <div style={{
+          padding: '10px 16px',
+          background: '#050505',
+          border: '1px solid #1A1A1A',
+          borderRadius: 8,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: 13 }}>🔒</span>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#333', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+            Privacy Receipt
+          </span>
+          <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#333', flex: 1 }}>
+            {veniceCallCount} Venice AI calls · <span style={{ color: '#22C55E' }}>0 bytes retained</span> · Training data: <span style={{ color: '#22C55E' }}>None</span>
+          </span>
+        </div>
       )}
 
       <div ref={bottomRef} />
-    </div>
-  )
-}
-
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ border: '1px solid #2A2A2A', borderRadius: 8, overflow: 'hidden' }}>
-      <div style={{ background: '#0D0D0D', padding: '8px 16px', borderBottom: '1px solid #2A2A2A' }}>
-        <p style={{ fontFamily: 'var(--font-display)', fontSize: 10, color: '#FF6B35', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
-          {label}
-        </p>
-      </div>
-      <div style={{ padding: '12px 16px' }}>
-        {children}
-      </div>
     </div>
   )
 }

@@ -5,6 +5,7 @@ import { paymentMiddleware, x402ResourceServer } from '@x402/express'
 import { x402ExactEvmErc7710ServerScheme } from '@metamask/x402'
 import { HTTPFacilitatorClient } from '@x402/core/server'
 import OpenAI from 'openai'
+import type { AgentResult, RenderBlock } from './agent-result.js'
 
 const NETWORK_ID = 'eip155:84532'
 const PORT = process.env.PORT ?? 4004
@@ -60,108 +61,109 @@ async function veniceChat(messages: OpenAI.ChatCompletionMessageParam[]): Promis
   return res.choices[0].message.content ?? ''
 }
 
-async function veniceSearch(query: string): Promise<string> {
-  const res = await venice.chat.completions.create({
-    model: MODEL,
-    messages: [{ role: 'user', content: query }],
-    // @ts-expect-error Venice-specific
-    venice_parameters: { enable_web_search: 'auto' },
-  })
-  return res.choices[0].message.content ?? ''
-}
+type BrandBrief = { mood: string; colors: string[]; metaphors: string[]; avoid: string[]; imagePrompt: string }
 
 app.post('/execute', async (req: Request, res: Response) => {
   const { task, context } = req.body as { task: string; context?: Record<string, unknown> }
   const start = Date.now()
+  const contextStr = JSON.stringify(context ?? {}).slice(0, 4000)
 
   try {
-    // STEP 1 — REASON: Extract brand identity from positioning strategy
-    const brandExtraction = await veniceChat([
+    // REASON — one call derives the brand identity AND the image prompt together.
+    // (Web-search step removed to keep the paid request fast — no 502.)
+    const briefRaw = await veniceChat([
       {
         role: 'system',
-        content: `You are a visual brand director. Extract the core visual identity elements from the positioning strategy: (1) dominant emotion/mood (e.g. bold/mysterious/playful/premium), (2) color palette suggestion (3 hex codes with rationale), (3) visual metaphors that represent the brand's differentiation, (4) what to AVOID visually (what makes it look like every other crypto project). Return as structured JSON: { "mood": "", "colors": ["#hex1","#hex2","#hex3"], "metaphors": [], "avoid": [] }`,
+        content: `You are a visual brand director. From the positioning, produce the brand visual identity AND a ready-to-use image-generation prompt for a 1024x1024 launch banner. Return ONLY JSON:
+{
+  "mood": "dominant mood",
+  "colors": ["#hex1","#hex2","#hex3"],
+  "metaphors": ["visual metaphor", "..."],
+  "avoid": ["cliché to avoid", "..."],
+  "imagePrompt": "detailed Flux/SDXL prompt: art style, lighting, mood, palette, composition, quality modifiers. NO text/words in the image."
+}`,
       },
-      {
-        role: 'user',
-        content: `Task: ${task}
-
-Strategy and positioning from prior agents:
-${JSON.stringify(context ?? {}, null, 2)}`,
-      },
+      { role: 'user', content: `Task: ${task}\n\nPositioning from prior agents:\n${contextStr}` },
     ])
 
-    let brandIdentity = { mood: 'bold and innovative', colors: ['#FF6B35', '#000000', '#FFFFFF'], metaphors: ['launch', 'movement'], avoid: ['generic rocket ships', 'copy-paste moon imagery'] }
+    let brief: BrandBrief = {
+      mood: 'bold and innovative',
+      colors: ['#FF6B35', '#000000', '#FFFFFF'],
+      metaphors: ['launch', 'movement'],
+      avoid: ['generic rocket ships', 'copy-paste moon imagery'],
+      imagePrompt: `A bold, cinematic crypto launch banner, dramatic orange and black palette, volumetric lighting, premium 3D render, high detail, no text — theme: ${task}`,
+    }
     try {
-      const parsed = JSON.parse(brandExtraction.match(/\{[\s\S]*\}/)?.[0] ?? '{}')
-      if (parsed.mood) brandIdentity = parsed
+      const parsed = JSON.parse(briefRaw.match(/\{[\s\S]*\}/)?.[0] ?? '{}')
+      if (parsed.imagePrompt) brief = { ...brief, ...parsed }
     } catch { /* use defaults */ }
 
-    // STEP 2 — SEARCH TOOL: Research visual trends in this specific crypto niche
-    const visualTrends = await veniceSearch(
-      `${task} crypto project visual branding design trends 2024 what makes memorable launch banner`
-    )
-
-    // STEP 3 — REASON: Craft a precise, detailed image generation prompt
-    const imagePrompt = await veniceChat([
-      {
-        role: 'system',
-        content: `You are an expert at writing Stable Diffusion / Flux image generation prompts. Write a detailed prompt for a crypto project launch banner (1024x1024). The prompt must: specify art style, lighting, mood, color palette, composition, and key visual elements. Include technical quality modifiers. Do NOT include text/words in the image — it's a background banner. Return ONLY the prompt, no explanation.`,
-      },
-      {
-        role: 'user',
-        content: `Brand identity: ${JSON.stringify(brandIdentity)}
-Visual trends research: ${visualTrends.slice(0, 800)}
-Project context: ${JSON.stringify(context ?? {})}
-Task: ${task}`,
-      },
+    // ACT — image generation runs in parallel with (announcement script → TTS).
+    const imagePromptTrimmed = brief.imagePrompt.slice(0, 1500)
+    const [imageResult, voiced] = await Promise.all([
+      venice.images.generate({ model: 'fluently-xl', prompt: imagePromptTrimmed, n: 1, size: '1024x1024' }),
+      (async () => {
+        const script = await veniceChat([
+          {
+            role: 'system',
+            content: `You are a crypto launch copywriter. Write a punchy 30-second spoken announcement (80-100 words). Energetic, clear, credible. No clichés like "to the moon" or "diamond hands". Hook → what it is → why it matters → call to action. Natural when read aloud.`,
+          },
+          { role: 'user', content: `Project: ${task}\nPositioning: ${contextStr}` },
+        ])
+        const audioRes = await venice.audio.speech.create({ model: 'tts-kokoro', input: script, voice: 'af_sky' })
+        const audioBuf = Buffer.from(await (audioRes as unknown as { arrayBuffer(): Promise<ArrayBuffer> }).arrayBuffer())
+        return { script, audioB64: audioBuf.toString('base64') }
+      })(),
     ])
 
-    // STEP 4 — SEARCH TOOL (generate assets): Image + announcement script in parallel
-    // Venice image endpoint caps prompt at 1500 characters
-    const imagePromptTrimmed = imagePrompt.slice(0, 1500)
-    const [imageResult, announcementScript] = await Promise.all([
-      venice.images.generate({
-        model: 'fluently-xl',
-        prompt: imagePromptTrimmed,
-        n: 1,
-        size: '1024x1024',
-      }),
-      veniceChat([
-        {
-          role: 'system',
-          content: `You are a crypto launch copywriter. Write a punchy 30-second TTS announcement (80-100 words). It should feel like an exciting product launch — energetic, clear, credible. No hype clichés like "to the moon" or "diamond hands". Open with a hook, state what it is, why it matters, and end with a call to action. Make it sound natural when spoken aloud.`,
-        },
-        {
-          role: 'user',
-          content: `Project: ${task}
-Positioning: ${JSON.stringify(context ?? {})}`,
-        },
-      ]),
-    ])
+    const imageB64 = imageResult.data?.[0]?.b64_json ?? null
+    const imageUrl = imageResult.data?.[0]?.url ?? null
 
-    // STEP 5 — GENERATE STRATEGY: TTS audio + assemble final package
-    const audioRes = await venice.audio.speech.create({
-      model: 'tts-kokoro',
-      input: announcementScript,
-      voice: 'af_sky',
+    const blocks: RenderBlock[] = []
+    blocks.push({
+      kind: 'image',
+      title: 'Launch banner',
+      b64: imageB64 ?? undefined,
+      url: imageUrl ?? undefined,
+      prompt: brief.imagePrompt,
+      alt: `Launch banner — ${brief.mood}`,
     })
-    const audioBuf = Buffer.from(
-      await (audioRes as unknown as { arrayBuffer(): Promise<ArrayBuffer> }).arrayBuffer()
-    )
+    blocks.push({
+      kind: 'audio',
+      title: 'Voiced announcement',
+      b64: voiced.audioB64,
+      contentType: 'audio/mpeg',
+      script: voiced.script,
+    })
+    blocks.push({
+      kind: 'badges',
+      title: 'Brand direction',
+      items: [
+        { label: brief.mood, tone: 'good', detail: 'mood' },
+        ...brief.colors.slice(0, 3).map((c) => ({ label: c, tone: 'neutral' as const, detail: 'palette' })),
+      ],
+    })
+    if (brief.metaphors?.length || brief.avoid?.length) {
+      blocks.push({
+        kind: 'markdown',
+        title: 'Creative rationale',
+        body: `**Visual metaphors:** ${(brief.metaphors ?? []).join(', ') || '—'}\n\n**Deliberately avoided:** ${(brief.avoid ?? []).join(', ') || '—'}`,
+      })
+    }
 
-    const output = JSON.stringify({
-      image: imageResult.data?.[0]?.b64_json ?? null,
-      imageUrl: imageResult.data?.[0]?.url ?? null,
-      imagePrompt,
-      brandIdentity,
-      audioScript: announcementScript,
-      audio: audioBuf.toString('base64'),
-      audioMimeType: 'audio/mpeg',
-    })
+    const result: AgentResult = {
+      status: 'success',
+      agent: 'Visual Asset',
+      headline: `Launch banner + voiced announcement generated (${brief.mood})`,
+      blocks,
+      // summary carries NO base64 — only the text the orchestrator/synthesis needs.
+      summary: `Generated a launch banner (mood: ${brief.mood}, palette: ${(brief.colors ?? []).join(', ')}) and a voiced announcement.\nAnnouncement script: ${voiced.script}`,
+      provenance: 'Venice fluently-xl (image) + tts-kokoro (audio) — zero retention',
+    }
 
     res.json({
       status: 'success',
-      output,
+      output: JSON.stringify(result),
       outputType: 'json',
       contentType: 'application/json',
       executionTime: (Date.now() - start) / 1000,
