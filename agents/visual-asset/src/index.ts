@@ -5,6 +5,7 @@ import { paymentMiddleware, x402ResourceServer } from '@x402/express'
 import { x402ExactEvmErc7710ServerScheme } from '@metamask/x402'
 import { HTTPFacilitatorClient } from '@x402/core/server'
 import OpenAI from 'openai'
+import { randomUUID } from 'crypto'
 import type { AgentResult, RenderBlock } from './agent-result.js'
 
 const NETWORK_ID = 'eip155:84532'
@@ -26,7 +27,55 @@ const resourceServer = new x402ResourceServer(facilitatorClient).register(
 
 const app = express()
 app.use(cors({ exposedHeaders: ['PAYMENT-REQUIRED', 'PAYMENT-RESPONSE'] }))
-app.use(express.json())
+app.use(express.json({ limit: '10mb' }))
+
+// ── Two-phase async job store ─────────────────────────────────────────────────
+// Image generation + TTS run ~25s synchronously, which can overrun Railway's
+// request window on a buffered x402 request (surfacing as `TypeError: terminated`).
+// So the paid POST only STARTS the job and returns a jobId; the work runs out of
+// band and is collected via the free GET /result/:jobId poll. Same pattern as the
+// video + competitive-tech agents.
+type Job = { status: 'processing' | 'done' | 'error'; result?: AgentResult; error?: string; createdAt: number }
+const jobStore = new Map<string, Job>()
+
+function processingResult(jobId: string): AgentResult {
+  return {
+    status: 'processing',
+    agent: 'Visual Asset',
+    jobId,
+    headline: 'Designing your banner + announcement…',
+    blocks: [
+      { kind: 'badges', title: 'Status', items: [{ label: 'Generating banner + voiced announcement', tone: 'warn', detail: 'Venice image + TTS in progress.' }] },
+    ],
+    summary: 'Generating a launch banner and a voiced announcement…',
+    provenance: 'Venice fluently-xl (image) + tts-kokoro (audio)',
+  }
+}
+
+// Phase 2 — FREE polling endpoint, registered BEFORE the x402 gate so it is not
+// charged. Each call returns immediately, so no request is held open long enough
+// to be terminated.
+app.get('/result/:jobId', (req: Request, res: Response) => {
+  const job = jobStore.get(req.params.jobId)
+  if (!job) {
+    res.status(404).json({ error: 'Job not found or expired' })
+    return
+  }
+  if (job.status === 'done' && job.result) {
+    res.json({ done: true, status: job.result.status, output: JSON.stringify(job.result), outputType: 'json', contentType: 'application/json', executionTime: 0 })
+    return
+  }
+  if (job.status === 'error') {
+    res.json({ done: true, status: 'error', output: job.error ?? 'Visual generation failed', outputType: 'text', contentType: 'text/plain', executionTime: 0 })
+    return
+  }
+  // Safety timeout — surface an error so the orchestrator falls back cleanly.
+  if (Date.now() - job.createdAt > 120_000) {
+    res.json({ done: true, status: 'error', output: 'Visual generation timed out', outputType: 'text', contentType: 'text/plain', executionTime: 0 })
+    return
+  }
+  res.json({ done: false, status: 'processing', output: JSON.stringify(processingResult(req.params.jobId)), outputType: 'json', contentType: 'application/json', executionTime: 0, jobId: req.params.jobId })
+})
 
 app.use(
   paymentMiddleware(
@@ -63,12 +112,12 @@ async function veniceChat(messages: OpenAI.ChatCompletionMessageParam[]): Promis
 
 type BrandBrief = { mood: string; colors: string[]; metaphors: string[]; avoid: string[]; imagePrompt: string }
 
-app.post('/execute', async (req: Request, res: Response) => {
-  const { task, context } = req.body as { task: string; context?: Record<string, unknown> }
-  const start = Date.now()
+// The heavy creative work — runs out of band (see POST /execute). Returns the
+// final structured result; throws on hard failure (caught by caller → job error).
+async function runVisualWork(task: string, context?: Record<string, unknown>): Promise<AgentResult> {
   const contextStr = JSON.stringify(context ?? {}).slice(0, 4000)
 
-  try {
+  {
     // REASON — one call derives the brand identity AND the image prompt together.
     // (Web-search step removed to keep the paid request fast — no 502.)
     const briefRaw = await veniceChat([
@@ -151,7 +200,7 @@ app.post('/execute', async (req: Request, res: Response) => {
       })
     }
 
-    const result: AgentResult = {
+    return {
       status: 'success',
       agent: 'Visual Asset',
       headline: `Launch banner + voiced announcement generated (${brief.mood})`,
@@ -160,24 +209,32 @@ app.post('/execute', async (req: Request, res: Response) => {
       summary: `Generated a launch banner (mood: ${brief.mood}, palette: ${(brief.colors ?? []).join(', ')}) and a voiced announcement.\nAnnouncement script: ${voiced.script}`,
       provenance: 'Venice fluently-xl (image) + tts-kokoro (audio) — zero retention',
     }
-
-    res.json({
-      status: 'success',
-      output: JSON.stringify(result),
-      outputType: 'json',
-      contentType: 'application/json',
-      executionTime: (Date.now() - start) / 1000,
-    })
-  } catch (err) {
-    console.error('[visual-asset] Error:', err)
-    res.status(500).json({
-      status: 'error',
-      output: String(err),
-      outputType: 'text',
-      contentType: 'text/plain',
-      executionTime: (Date.now() - start) / 1000,
-    })
   }
+}
+
+// Phase 1 — PAID. Starts the creative work out of band and returns a jobId
+// immediately so the x402 request settles fast; the orchestrator polls /result.
+app.post('/execute', async (req: Request, res: Response) => {
+  const { task, context } = req.body as { task: string; context?: Record<string, unknown> }
+  const start = Date.now()
+  const jobId = randomUUID()
+  jobStore.set(jobId, { status: 'processing', createdAt: Date.now() })
+
+  runVisualWork(task, context)
+    .then((result) => jobStore.set(jobId, { status: 'done', result, createdAt: Date.now() }))
+    .catch((err) => {
+      console.error('[visual-asset] generation error:', err)
+      jobStore.set(jobId, { status: 'error', error: String(err), createdAt: Date.now() })
+    })
+
+  res.json({
+    status: 'success', // x402-level: the paid request succeeded (job accepted)
+    output: JSON.stringify(processingResult(jobId)),
+    outputType: 'json',
+    contentType: 'application/json',
+    executionTime: (Date.now() - start) / 1000,
+    jobId, // signals the orchestrator to poll /result/:jobId
+  })
 })
 
 app.get('/health', (_req: Request, res: Response) => {

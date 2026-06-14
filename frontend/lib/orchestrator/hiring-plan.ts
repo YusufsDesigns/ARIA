@@ -2,8 +2,51 @@ import venice from '../venice'
 import { getAgentsByCapability, getAgent, requestCapability, type OnChainAgent } from '../registry'
 import { getManifestCached } from './manifest-cache'
 import type { ResolvedAgent } from './resolve-agents'
-import type { VeniceCallTracker } from './plan'
+import { getAllDistinctCapabilities, type VeniceCallTracker } from './plan'
 import { safeParseJSON } from './safe-json-parse'
+
+// ─── Registered-tag resolution ────────────────────────────────────────────────
+// The planner (Venice) names capabilities in free text; an exact string mismatch
+// against the on-chain tag (e.g. "onchain-analysis" vs "onchain-analytics") would
+// otherwise silently drop a real agent to Venice fallback. We map a planned tag to
+// the closest REGISTERED tag (so we can only ever resolve to capabilities that have
+// agents) before the on-chain lookup. Cached per process — tags are immutable.
+
+let _registeredTags: string[] | null = null
+async function getRegisteredTags(): Promise<string[]> {
+  if (_registeredTags) return _registeredTags
+  _registeredTags = await getAllDistinctCapabilities().catch(() => [])
+  return _registeredTags
+}
+
+const normalizeTag = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/s$/, '')
+
+function resolveToRegisteredTag(cap: string, registeredTags: string[]): string | null {
+  if (registeredTags.includes(cap)) return cap
+  const n = normalizeTag(cap)
+  let containment: string | null = null
+  for (const t of registeredTags) {
+    const nt = normalizeTag(t)
+    if (nt === n) return t // normalized equality — strongest non-exact match
+    if (!containment && (nt.includes(n) || n.includes(nt))) containment = t
+  }
+  return containment
+}
+
+// One retry on throw — distinguishes a transient RPC error from a genuine gap so
+// a single blip can't silently degrade the whole run (and log a false on-chain gap).
+async function lookupAgentsByCapability(
+  tag: string,
+): Promise<{ ids: `0x${string}`[]; errored: boolean }> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return { ids: (await getAgentsByCapability(tag)) as `0x${string}`[], errored: false }
+    } catch {
+      if (attempt === 0) await new Promise(r => setTimeout(r, 400))
+    }
+  }
+  return { ids: [], errored: true }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,6 +70,7 @@ type CandidateAgent = {
   id: string
   agent: ResolvedAgent
   taggedCapabilities: string[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   manifest: any
 }
 
@@ -54,18 +98,19 @@ export async function buildHiringPlan(
   const capabilityToCandidateIds = new Map<string, string[]>()
 
   // ── STAGE 1: Coarse filter — on-chain lookup + manifest fetch ─────────────
+  const registeredTags = await getRegisteredTags()
+
   for (const cap of capabilities) {
-    let agentIds: `0x${string}`[] = []
-    try {
-      agentIds = (await getAgentsByCapability(cap)) as `0x${string}`[]
-    } catch {
-      agentIds = []
-    }
+    // Map the planned tag to the closest registered one before lookup, so a
+    // near-miss ("onchain-analysis" → "onchain-analytics") still finds its agent.
+    const lookupTag = resolveToRegisteredTag(cap, registeredTags) ?? cap
+    const { ids: agentIds, errored } = await lookupAgentsByCapability(lookupTag)
 
     if (agentIds.length === 0) {
-      // Genuine marketplace gap — agent has never been registered for this tag
       noAgentCapabilities.push(cap)
-      if (!gapLoggedThisRun.has(cap)) {
+      // Only log an on-chain capability gap for a GENUINE miss — never for a
+      // transient RPC error (errored), which would record a false demand signal.
+      if (!errored && !gapLoggedThisRun.has(cap)) {
         requestCapability(cap).catch(() => {})
         gapLoggedThisRun.add(cap)
       }
@@ -274,6 +319,38 @@ Return valid JSON only (no markdown, no explanation):
       fitLevel: hire.fitLevel ?? 'good',
       taskInstructions: hire.taskInstructions,
     })
+  }
+
+  // ── Coverage guard ──────────────────────────────────────────────────────────
+  // The semantic layer (Venice) refines WHICH agent and HOW — it must never cause
+  // a capability that HAS a reachable, registered agent to be silently dropped.
+  // If Venice returns empty/partial hires (a stochastic failure mode that produced
+  // zero-hire runs), any capability with candidates that was neither hired nor
+  // explicitly flagged poor-fit gets the cheapest candidate hired with the raw
+  // task as instructions. Guarantees: a registered agent always runs.
+  const coveredByHire = new Set(hires.flatMap(h => h.coversCapabilities))
+  const flaggedPoorFit = new Set(poorFitCapabilities)
+  for (const cap of capabilitiesWithCandidates) {
+    if (coveredByHire.has(cap) || flaggedPoorFit.has(cap)) continue
+    const cheapest = (capabilityToCandidateIds.get(cap) ?? [])
+      .map(id => candidateMap.get(id))
+      .filter((c): c is CandidateAgent => !!c)
+      .sort((a, b) => a.agent.priceUSDC - b.agent.priceUSDC)[0]
+    if (!cheapest) continue
+
+    const existing = hires.find(h => h.agent.id === cheapest.agent.id)
+    if (existing) {
+      existing.coversCapabilities.push(cap)
+    } else {
+      hires.push({
+        agent: cheapest.agent,
+        coversCapabilities: [cap],
+        allRegistryCapabilities: cheapest.taggedCapabilities,
+        fitLevel: 'good',
+        taskInstructions: task,
+      })
+    }
+    coveredByHire.add(cap)
   }
 
   return { hires, fallbacks }

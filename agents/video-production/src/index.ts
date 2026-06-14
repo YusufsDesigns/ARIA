@@ -67,7 +67,7 @@ async function queueVideo(
     method: 'POST',
     headers: veniceVideoHeaders(),
     body: JSON.stringify({
-      model: 'seedance-2-0-text-to-video',
+      model: 'seedance-1-5-pro-text-to-video',
       prompt,
       duration: `${durationSecs}s`,
       aspect_ratio: '16:9',
@@ -279,7 +279,7 @@ app.post('/execute', async (req: Request, res: Response) => {
     if ('error' in queued) {
       // Couldn't even queue — still deliver the narration as a partial (paid work done).
       const jobId = randomUUID()
-      const job: JobState = { veniceModel: 'seedance-2-0-text-to-video', queueId: '', videoPrompt, durationSeconds: 5, audioB64, audioScript, createdAt: Date.now() }
+      const job: JobState = { veniceModel: 'seedance-1-5-pro-text-to-video', queueId: '', videoPrompt, durationSeconds: 5, audioB64, audioScript, createdAt: Date.now() }
       const partial = buildResult(job, null, true)
       res.json({ status: 'partial', output: JSON.stringify(partial), outputType: 'json', contentType: 'application/json', executionTime: (Date.now() - start) / 1000, jobId })
       return

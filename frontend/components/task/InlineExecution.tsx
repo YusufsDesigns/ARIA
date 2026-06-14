@@ -23,7 +23,7 @@ type TaskEvent = {
   timestamp: number
 }
 
-type Payment = {
+export type Payment = {
   agent: string
   capability: string
   amount: number
@@ -31,7 +31,7 @@ type Payment = {
   timestamp: number
 }
 
-type AgentStep = {
+export type AgentStep = {
   agentName: string
   capability: string
   amount: number
@@ -57,6 +57,14 @@ function isStructured(finding?: string, outputType?: string): boolean {
 type Props = {
   taskId: string
   onBudgetUpdate?: (spent: number) => void
+  // When false, render from `initial` only and do not open the SSE stream
+  // (used when revisiting an already-completed task loaded from the DB).
+  live?: boolean
+  initial?: {
+    agents?: AgentStep[]
+    payments?: Payment[]
+    synthesis?: { content: string; outputType?: string } | null
+  }
 }
 
 const BASESCAN = 'https://sepolia.basescan.org/tx/'
@@ -255,10 +263,22 @@ function shortPreview(text: string, max = 120): string {
 
 function AgentRow({ agent }: { agent: AgentStep }) {
   const structured = isStructured(agent.finding, agent.outputType)
-  const [expanded, setExpanded] = useState(false)
+  // Collapsed by default — the final answer is the place to read; each row is a
+  // verifiable source you can open. Keeps the page from being overwhelming.
+  const [open, setOpen] = useState(false)
   const hasFinding = !!agent.finding
-  // Structured results render their rich view always (no expand gate needed).
-  const showRich = structured && agent.status !== 'running'
+  const done = agent.status !== 'running'
+  // Raw media findings (image/audio/video) come from orchestrator fallbacks, which
+  // return a bare base64/url payload rather than a structured AgentResult.
+  const isMedia = !structured && (agent.outputType === 'image' || agent.outputType === 'audio' || agent.outputType === 'video')
+  // Any completed finding is expandable; the detail renders only when opened.
+  const expandable = hasFinding && done
+
+  // One-line headline pulled from a structured result, for the collapsed preview.
+  let headline: string | null = null
+  if (structured && agent.finding) {
+    try { headline = (JSON.parse(agent.finding) as { headline?: string }).headline ?? null } catch { /* ignore */ }
+  }
 
   const isFallback = agent.isFallback
   const bgColor = agent.status === 'failed'
@@ -286,24 +306,26 @@ function AgentRow({ agent }: { agent: AgentStep }) {
     ? <span style={{ color: '#22C55E', fontSize: 11, flexShrink: 0 }}>✓</span>
     : <span style={{ color: '#444', fontSize: 11, flexShrink: 0 }}>↪</span>
 
-  // Preview text shown while collapsed. Running agents show live render progress;
-  // text findings show a snippet; structured results need no preview (rendered below).
+  // Preview text shown while collapsed. Running → live progress; structured →
+  // its headline; media → asset label; text → a snippet.
   const preview = agent.status === 'running' && agent.progress
     ? agent.progress
+    : headline
+    ? headline
+    : isMedia && hasFinding
+    ? `${agent.outputType} asset generated — click to view`
     : hasFinding && agent.outputType === 'text'
     ? shortPreview(agent.finding!)
     : null
-  // Only text findings use the click-to-expand affordance.
-  const canExpand = hasFinding && !structured
 
   return (
     <div style={{ background: bgColor, border: `1px solid ${borderColor}`, borderRadius: 6, overflow: 'hidden', marginBottom: 3 }}>
       <div
         style={{
           display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px',
-          cursor: canExpand ? 'pointer' : 'default',
+          cursor: expandable ? 'pointer' : 'default',
         }}
-        onClick={() => canExpand && setExpanded(e => !e)}
+        onClick={() => expandable && setOpen(o => !o)}
       >
         {/* Status */}
         <span style={{ flexShrink: 0, width: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -325,7 +347,7 @@ function AgentRow({ agent }: { agent: AgentStep }) {
             {agent.capability}
           </p>
           {/* Preview visible when collapsed */}
-          {preview && !expanded && (
+          {preview && !open && (
             <p style={{ fontFamily: 'var(--font-body)', fontSize: 10, color: '#777', marginTop: 3, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {preview}
             </p>
@@ -343,26 +365,25 @@ function AgentRow({ agent }: { agent: AgentStep }) {
           </span>
         ) : null}
 
-        {/* Expand toggle — only for plain-text findings */}
-        {canExpand && (
-          <span style={{ fontSize: 8, color: '#555', transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 150ms', flexShrink: 0 }}>▶</span>
+        {/* Expand toggle — present whenever there's content to reveal */}
+        {expandable && (
+          <span style={{ fontSize: 8, color: '#555', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 150ms', flexShrink: 0 }}>▶</span>
         )}
       </div>
 
-      {/* Structured results render their full rich view inline (the showcase) */}
-      {showRich && (
+      {/* Detail — collapsed by default; renders the right view for the finding type */}
+      {expandable && open && (
         <div style={{ padding: '16px 16px 18px', borderTop: '1px solid #161616', background: '#070707' }}>
-          <AgentResultView output={agent.finding!} />
-        </div>
-      )}
-
-      {/* Plain-text findings (Venice fallbacks) keep the click-to-expand snippet */}
-      {canExpand && expanded && (
-        <div style={{ padding: '10px 14px 14px', borderTop: '1px solid #111', background: '#080808' }}>
-          <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#999', lineHeight: 1.7, fontStyle: 'italic' }}>
-            {agent.finding!.replace(/#+\s*/g, '').replace(/\*\*/g, '').slice(0, 500)}
-            {agent.finding!.length > 500 ? '…' : ''}
-          </p>
+          {structured ? (
+            <AgentResultView output={agent.finding!} />
+          ) : isMedia ? (
+            <FindingRenderer finding={agent.finding} outputType={agent.outputType} />
+          ) : (
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#999', lineHeight: 1.7, fontStyle: 'italic' }}>
+              {agent.finding!.replace(/#+\s*/g, '').replace(/\*\*/g, '').slice(0, 800)}
+              {agent.finding!.length > 800 ? '…' : ''}
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -437,17 +458,18 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function InlineExecution({ taskId, onBudgetUpdate }: Props) {
+export function InlineExecution({ taskId, onBudgetUpdate, live = true, initial }: Props) {
   const [thoughts, setThoughts] = useState<string[]>([])
-  const [agents, setAgents] = useState<AgentStep[]>([])
-  const [payments, setPayments] = useState<Payment[]>([])
+  const [agents, setAgents] = useState<AgentStep[]>(initial?.agents ?? [])
+  const [payments, setPayments] = useState<Payment[]>(initial?.payments ?? [])
   const [veniceCallCount, setVeniceCallCount] = useState(0)
-  const [synthesis, setSynthesis] = useState<{ content: string; outputType?: string } | null>(null)
-  const [done, setDone] = useState(false)
+  const [synthesis, setSynthesis] = useState<{ content: string; outputType?: string } | null>(initial?.synthesis ?? null)
+  const [done, setDone] = useState(!live)
   const [failed, setFailed] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    if (!live) return // revisiting a completed task — render from `initial`, no stream
     const es = new EventSource(`/api/task/${taskId}/stream`)
 
     es.onmessage = (e) => {
@@ -665,9 +687,13 @@ export function InlineExecution({ taskId, onBudgetUpdate }: Props) {
             </div>
           </div>
           <div style={{ padding: '24px 24px' }}>
-            <FindingRenderer finding={synthesis.content} outputType={synthesis.outputType ?? 'text'} />
+            {isStructured(synthesis.content, synthesis.outputType) ? (
+              <AgentResultView output={synthesis.content} />
+            ) : (
+              <FindingRenderer finding={synthesis.content} outputType={synthesis.outputType ?? 'text'} />
+            )}
             <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#444', marginTop: 18 }}>
-              Each agent&apos;s full output — live metrics, generated media, sources — is shown in the Agent Plan above.
+              Each contributing agent&apos;s raw output is collapsed in the Agent Plan above — expand any row to verify the source data.
             </p>
           </div>
         </div>

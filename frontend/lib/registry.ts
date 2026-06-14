@@ -1,5 +1,14 @@
 import { encodeFunctionData } from 'viem'
-import { publicClient, bundlerClient, getOrchestratorSmartAccount } from './delegation'
+import { publicClient, orchestratorWalletClient } from './delegation'
+
+// Serialize all orchestrator EOA writes so concurrent calls (e.g. several
+// recordTaskCompletion in one round) can't collide on the account nonce.
+let writeQueue: Promise<unknown> = Promise.resolve()
+function serializeWrite<T>(fn: () => Promise<T>): Promise<T> {
+  const run = writeQueue.then(fn, fn)
+  writeQueue = run.catch(() => {})
+  return run
+}
 
 export const REGISTRY_ADDRESS = process.env.NEXT_PUBLIC_REGISTRY_ADDRESS as `0x${string}`
 export const USDC_ADDRESS = process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}`
@@ -140,27 +149,25 @@ export const getCapabilityGaps = () =>
 // relayer_send7710Transaction) — the explicit 1Shot API, not ERC-4337 bundler.
 // Falls back to bundler if 1Shot relay fails (e.g., dry-run environment).
 export const requestCapability = async (capability: string) => {
-  const data = encodeFunctionData({
-    abi: REGISTRY_ABI,
-    functionName: 'requestCapability',
-    args: [capability],
-  })
-
   try {
-    // Primary path: 1Shot EIP-7710 delegation relay with EIP-7702 upgrade on first use
+    // Primary (gasless) path: 1Shot EIP-7710 delegation relay.
     const { executeVia1Shot7710 } = await import('./oneshot')
     return await executeVia1Shot7710(
-      [{ to: REGISTRY_ADDRESS, data, value: '0' }],
+      [{ to: REGISTRY_ADDRESS, data: encodeFunctionData({ abi: REGISTRY_ABI, functionName: 'requestCapability', args: [capability] }), value: '0' }],
       { upgradeViaEip7702: false },
     )
   } catch {
-    // Fallback: ERC-4337 bundler (also routes through 1Shot endpoint)
-    const account = await getOrchestratorSmartAccount()
-    const userOpHash = await bundlerClient.sendUserOperation({
-      account,
-      calls: [{ to: REGISTRY_ADDRESS, data }],
-    })
-    return bundlerClient.waitForUserOperationReceipt({ hash: userOpHash })
+    // Reliable fallback: orchestrator EOA writes directly (pays gas in ETH).
+    // 1Shot's relayer_getCapabilities returns {} on Base Sepolia, so the gasless
+    // bundle can't be built — this guarantees the gap is actually logged on-chain.
+    return serializeWrite(() =>
+      orchestratorWalletClient.writeContract({
+        address: REGISTRY_ADDRESS,
+        abi: REGISTRY_ABI,
+        functionName: 'requestCapability',
+        args: [capability],
+      })
+    )
   }
 }
 
@@ -178,11 +185,14 @@ export const recordTaskCompletion = async (agentId: `0x${string}`) => {
     const { executeVia1Shot7710 } = await import('./oneshot')
     return await executeVia1Shot7710([{ to: REGISTRY_ADDRESS, data, value: '0' }])
   } catch {
-    const account = await getOrchestratorSmartAccount()
-    const userOpHash = await bundlerClient.sendUserOperation({
-      account,
-      calls: [{ to: REGISTRY_ADDRESS, data }],
-    })
-    return bundlerClient.waitForUserOperationReceipt({ hash: userOpHash })
+    // Reliable fallback: orchestrator EOA writes directly (pays gas in ETH).
+    return serializeWrite(() =>
+      orchestratorWalletClient.writeContract({
+        address: REGISTRY_ADDRESS,
+        abi: REGISTRY_ABI,
+        functionName: 'recordTaskCompletion',
+        args: [agentId],
+      })
+    )
   }
 }

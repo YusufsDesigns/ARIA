@@ -50,8 +50,10 @@ export async function runOrchestrator(
     })
 
     emit('synthesis_complete', {
+      // runReactLoop returns a structured ARIA AgentResult (JSON) — the rich,
+      // block-rendered final answer. Rendered via AgentResultView on the client.
       finding: synthesis,
-      outputType: 'text',
+      outputType: 'json',
       budgetSpent: budgetUsdc - budget.remaining,
       budgetRemaining: budget.remaining,
     })

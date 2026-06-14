@@ -5,6 +5,7 @@ import { paymentMiddleware, x402ResourceServer } from '@x402/express'
 import { x402ExactEvmErc7710ServerScheme } from '@metamask/x402'
 import { HTTPFacilitatorClient } from '@x402/core/server'
 import OpenAI from 'openai'
+import { randomUUID } from 'crypto'
 import type { AgentResult, RenderBlock, Tone } from './agent-result.js'
 
 const NETWORK_ID = 'eip155:84532'
@@ -27,6 +28,54 @@ const resourceServer = new x402ResourceServer(facilitatorClient).register(
 const app = express()
 app.use(cors({ exposedHeaders: ['PAYMENT-REQUIRED', 'PAYMENT-RESPONSE'] }))
 app.use(express.json())
+
+// ── Two-phase async job store ─────────────────────────────────────────────────
+// The analysis (DexScreener + Base RPC + BaseScan + 2 Venice calls for up to 5
+// tokens) can overrun Railway's request window on a buffered x402 request, which
+// surfaced to the orchestrator as `TypeError: terminated`. So the paid POST only
+// STARTS the job and returns a jobId immediately; the heavy work runs out of band
+// and is collected via the free GET /result/:jobId poll. Same pattern as video.
+type Job = { status: 'processing' | 'done' | 'error'; result?: AgentResult; error?: string; createdAt: number }
+const jobStore = new Map<string, Job>()
+
+function processingResult(jobId: string): AgentResult {
+  return {
+    status: 'processing',
+    agent: 'On-chain Analytics',
+    jobId,
+    headline: 'Pulling live on-chain data…',
+    blocks: [
+      { kind: 'badges', title: 'Status', items: [{ label: 'Analysing tokens on Base mainnet', tone: 'warn', detail: 'DexScreener + Base RPC + BaseScan verification in progress.' }] },
+    ],
+    summary: 'Gathering live on-chain market and contract data…',
+    provenance: 'DexScreener + Base RPC + BaseScan',
+  }
+}
+
+// Phase 2 — FREE polling endpoint, registered BEFORE the x402 gate so it is not
+// charged. Each call returns immediately, so no request is held open long enough
+// to be terminated.
+app.get('/result/:jobId', (req: Request, res: Response) => {
+  const job = jobStore.get(req.params.jobId)
+  if (!job) {
+    res.status(404).json({ error: 'Job not found or expired' })
+    return
+  }
+  if (job.status === 'done' && job.result) {
+    res.json({ done: true, status: job.result.status, output: JSON.stringify(job.result), outputType: 'json', contentType: 'application/json', executionTime: 0 })
+    return
+  }
+  if (job.status === 'error') {
+    res.json({ done: true, status: 'error', output: job.error ?? 'On-chain analysis failed', outputType: 'text', contentType: 'text/plain', executionTime: 0 })
+    return
+  }
+  // Safety timeout — surface an error so the orchestrator falls back cleanly.
+  if (Date.now() - job.createdAt > 120_000) {
+    res.json({ done: true, status: 'error', output: 'On-chain analysis timed out', outputType: 'text', contentType: 'text/plain', executionTime: 0 })
+    return
+  }
+  res.json({ done: false, status: 'processing', output: JSON.stringify(processingResult(req.params.jobId)), outputType: 'json', contentType: 'application/json', executionTime: 0, jobId: req.params.jobId })
+})
 
 app.use(
   paymentMiddleware(
@@ -257,99 +306,106 @@ function tokenBlocks(p: TokenProfile): RenderBlock[] {
   return blocks
 }
 
+// The heavy analysis — runs out of band (see POST /execute). Returns the final
+// structured result; throws on hard failure (caught by the caller → job error).
+async function runAnalysis(task: string, context?: Record<string, unknown>): Promise<AgentResult> {
+  // REASON — extract the token symbols/names to analyse from the task + context.
+  const extraction = await veniceChat([
+    {
+      role: 'system',
+      content: `Extract the crypto token names/symbols that should be analysed on-chain from the task. Include both competitors mentioned and any proposed new token. Return ONLY a JSON array of short symbol/name strings (max 5), no other text. Example: ["BRETT","TOSHI","LUNARPUP"]`,
+    },
+    { role: 'user', content: `Task: ${task}\nContext: ${JSON.stringify(context ?? {}).slice(0, 1200)}` },
+  ])
+  let symbols: string[] = []
+  try {
+    symbols = JSON.parse(extraction.match(/\[[\s\S]*\]/)?.[0] ?? '[]')
+  } catch { /* ignore */ }
+  symbols = (Array.isArray(symbols) ? symbols : []).map((s) => String(s).trim()).filter(Boolean).slice(0, 5)
+  if (symbols.length === 0) symbols = [task.split(/\s+/).slice(0, 2).join(' ')]
+
+  // ACT — pull live, verifiable on-chain data for every token in parallel.
+  const profiles = await Promise.all(symbols.map(profileToken))
+
+  // Build the structured render payload from REAL data (no LLM in the numbers).
+  const blocks: RenderBlock[] = []
+  const found = profiles.filter((p) => p.found)
+  if (found.length > 1) {
+    blocks.push({
+      kind: 'table',
+      title: 'Live comparison (Base mainnet)',
+      columns: ['Token', 'Price', 'Liquidity', '24h Vol', 'FDV', 'Verified'],
+      rows: found.map((p) => [
+        p.symbol.toUpperCase(),
+        p.pair?.priceUsd ? `$${Number(p.pair.priceUsd).toPrecision(3)}` : '—',
+        fmtUsd(p.pair?.liquidity?.usd),
+        fmtUsd(p.pair?.volume?.h24),
+        fmtUsd(p.pair?.fdv),
+        p.verified ? '✓' : '✗',
+      ]),
+    })
+  }
+  for (const p of profiles) blocks.push(...tokenBlocks(p))
+
+  // SYNTHESIZE — one Venice call turns the verified data into a risk verdict.
+  const dataDigest = profiles
+    .map((p) =>
+      p.found
+        ? `${p.symbol}: price $${p.pair?.priceUsd ?? '?'}, liquidity ${fmtUsd(p.pair?.liquidity?.usd)}, 24h vol ${fmtUsd(p.pair?.volume?.h24)}, FDV ${fmtUsd(p.pair?.fdv)}, age ${ageDays(p.pair?.pairCreatedAt) ?? '?'}d, verified ${p.verified}, supply ${fmtNum(p.supply)}`
+        : `${p.symbol}: no live Base pair found (name appears unclaimed)`
+    )
+    .join('\n')
+
+  const verdict = await veniceChat([
+    {
+      role: 'system',
+      content: `You are a blockchain security analyst. You are given REAL, live on-chain data (DexScreener + Base RPC + BaseScan verification). Write a concise markdown verdict: which tokens are healthy vs at-risk and why, citing the actual numbers. End with a one-line recommendation. Do NOT invent numbers beyond what is given.`,
+    },
+    { role: 'user', content: `Task: ${task}\n\nVerified on-chain data:\n${dataDigest}` },
+  ])
+  blocks.push({ kind: 'markdown', title: 'Analyst verdict', body: verdict })
+
+  const healthy = found.filter((p) => liquidityTone(p.pair?.liquidity?.usd) === 'good' && p.verified)
+  const headline =
+    found.length === 0
+      ? `No live Base pairs found for ${symbols.join(', ')}`
+      : `${found.length} token${found.length > 1 ? 's' : ''} analysed live · ${healthy.length} healthy`
+
+  return {
+    status: 'success',
+    agent: 'On-chain Analytics',
+    headline,
+    blocks,
+    summary: `On-chain analysis (live Base data):\n${dataDigest}\n\nVerdict:\n${verdict}`,
+    provenance: 'DexScreener + Base RPC (eth_call) + BaseScan verification',
+  }
+}
+
+// Phase 1 — PAID. Starts the analysis out of band and returns a jobId immediately
+// so the x402 request settles fast; the orchestrator polls GET /result/:jobId.
 app.post('/execute', async (req: Request, res: Response) => {
   const { task, context } = req.body as { task: string; context?: Record<string, unknown> }
   const start = Date.now()
+  const jobId = randomUUID()
+  jobStore.set(jobId, { status: 'processing', createdAt: Date.now() })
 
-  try {
-    // REASON — extract the token symbols/names to analyse from the task + context.
-    const extraction = await veniceChat([
-      {
-        role: 'system',
-        content: `Extract the crypto token names/symbols that should be analysed on-chain from the task. Include both competitors mentioned and any proposed new token. Return ONLY a JSON array of short symbol/name strings (max 5), no other text. Example: ["BRETT","TOSHI","LUNARPUP"]`,
-      },
-      { role: 'user', content: `Task: ${task}\nContext: ${JSON.stringify(context ?? {}).slice(0, 1200)}` },
-    ])
-    let symbols: string[] = []
-    try {
-      symbols = JSON.parse(extraction.match(/\[[\s\S]*\]/)?.[0] ?? '[]')
-    } catch { /* ignore */ }
-    symbols = (Array.isArray(symbols) ? symbols : []).map((s) => String(s).trim()).filter(Boolean).slice(0, 5)
-    if (symbols.length === 0) symbols = [task.split(/\s+/).slice(0, 2).join(' ')]
-
-    // ACT — pull live, verifiable on-chain data for every token in parallel.
-    const profiles = await Promise.all(symbols.map(profileToken))
-
-    // Build the structured render payload from REAL data (no LLM in the numbers).
-    const blocks: RenderBlock[] = []
-    const found = profiles.filter((p) => p.found)
-    if (found.length > 1) {
-      blocks.push({
-        kind: 'table',
-        title: 'Live comparison (Base mainnet)',
-        columns: ['Token', 'Price', 'Liquidity', '24h Vol', 'FDV', 'Verified'],
-        rows: found.map((p) => [
-          p.symbol.toUpperCase(),
-          p.pair?.priceUsd ? `$${Number(p.pair.priceUsd).toPrecision(3)}` : '—',
-          fmtUsd(p.pair?.liquidity?.usd),
-          fmtUsd(p.pair?.volume?.h24),
-          fmtUsd(p.pair?.fdv),
-          p.verified ? '✓' : '✗',
-        ]),
-      })
-    }
-    for (const p of profiles) blocks.push(...tokenBlocks(p))
-
-    // SYNTHESIZE — one Venice call turns the verified data into a risk verdict.
-    const dataDigest = profiles
-      .map((p) =>
-        p.found
-          ? `${p.symbol}: price $${p.pair?.priceUsd ?? '?'}, liquidity ${fmtUsd(p.pair?.liquidity?.usd)}, 24h vol ${fmtUsd(p.pair?.volume?.h24)}, FDV ${fmtUsd(p.pair?.fdv)}, age ${ageDays(p.pair?.pairCreatedAt) ?? '?'}d, verified ${p.verified}, supply ${fmtNum(p.supply)}`
-          : `${p.symbol}: no live Base pair found (name appears unclaimed)`
-      )
-      .join('\n')
-
-    const verdict = await veniceChat([
-      {
-        role: 'system',
-        content: `You are a blockchain security analyst. You are given REAL, live on-chain data (DexScreener + Base RPC + BaseScan verification). Write a concise markdown verdict: which tokens are healthy vs at-risk and why, citing the actual numbers. End with a one-line recommendation. Do NOT invent numbers beyond what is given.`,
-      },
-      { role: 'user', content: `Task: ${task}\n\nVerified on-chain data:\n${dataDigest}` },
-    ])
-    blocks.push({ kind: 'markdown', title: 'Analyst verdict', body: verdict })
-
-    const healthy = found.filter((p) => liquidityTone(p.pair?.liquidity?.usd) === 'good' && p.verified)
-    const headline =
-      found.length === 0
-        ? `No live Base pairs found for ${symbols.join(', ')}`
-        : `${found.length} token${found.length > 1 ? 's' : ''} analysed live · ${healthy.length} healthy`
-
-    const result: AgentResult = {
-      status: 'success',
-      agent: 'On-chain Analytics',
-      headline,
-      blocks,
-      summary: `On-chain analysis (live Base data):\n${dataDigest}\n\nVerdict:\n${verdict}`,
-      provenance: 'DexScreener + Base RPC (eth_call) + BaseScan verification',
-    }
-
-    res.json({
-      status: 'success',
-      output: JSON.stringify(result),
-      outputType: 'json',
-      contentType: 'application/json',
-      executionTime: (Date.now() - start) / 1000,
+  // Run the heavy work out of band — do NOT await; respond first so the buffered
+  // x402 request can never be held open long enough to be terminated.
+  runAnalysis(task, context)
+    .then((result) => jobStore.set(jobId, { status: 'done', result, createdAt: Date.now() }))
+    .catch((err) => {
+      console.error('[competitive-tech] analysis error:', err)
+      jobStore.set(jobId, { status: 'error', error: String(err), createdAt: Date.now() })
     })
-  } catch (err) {
-    console.error('[competitive-tech] Error:', err)
-    res.status(500).json({
-      status: 'error',
-      output: String(err),
-      outputType: 'text',
-      contentType: 'text/plain',
-      executionTime: (Date.now() - start) / 1000,
-    })
-  }
+
+  res.json({
+    status: 'success', // x402-level: the paid request succeeded (job accepted)
+    output: JSON.stringify(processingResult(jobId)),
+    outputType: 'json',
+    contentType: 'application/json',
+    executionTime: (Date.now() - start) / 1000,
+    jobId, // signals the orchestrator to poll /result/:jobId
+  })
 })
 
 app.get('/health', (_req: Request, res: Response) => {

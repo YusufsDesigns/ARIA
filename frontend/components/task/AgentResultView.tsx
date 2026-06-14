@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { parseAgentResult, type AgentResult, type RenderBlock, type Tone } from '@/lib/agent-result'
@@ -158,7 +158,24 @@ function AudioBlock({ block }: { block: Extract<RenderBlock, { kind: 'audio' }> 
 }
 
 function VideoBlock({ block }: { block: Extract<RenderBlock, { kind: 'video' }> }) {
-  const src = block.url ?? (block.b64 ? `data:${block.contentType ?? 'video/mp4'};base64,${block.b64}` : null)
+  // Prefer a blob URL built from the returned bytes: blob URLs support range
+  // requests/seeking (a raw base64 data-URI often won't actually play), and it
+  // bypasses agent URLs that may point at an unreachable host (e.g. localhost).
+  // Falls back to a direct URL only when no bytes were returned.
+  const blobUrl = useMemo(() => {
+    if (!block.b64) return null
+    try {
+      const bin = atob(block.b64)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      return URL.createObjectURL(new Blob([bytes], { type: block.contentType ?? 'video/mp4' }))
+    } catch {
+      return null
+    }
+  }, [block.b64, block.contentType])
+  useEffect(() => () => { if (blobUrl) URL.revokeObjectURL(blobUrl) }, [blobUrl])
+
+  const src = blobUrl ?? block.url ?? null
   if (!src) return null
   return (
     <div>

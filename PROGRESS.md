@@ -694,3 +694,46 @@ ARIA agents fuse live, verifiable on-chain/market data (DexScreener + Base RPC +
 2. Set `ETHERSCAN_API_KEY` on Railway for on-chain analytics verification (optional — degrades gracefully).
 3. Run LUNARPUP demo: confirm no 502, rich per-agent rendering, video streams in when ready.
 4. Record demo video.
+
+---
+
+## Session 13 — 2026-06-14
+**Duration:** ~4 hours
+**Focus:** Audit fixes (transparency, provenance, selection, rendering), agent reliability, the /app page split with history + continuation, capability-log fix
+
+### Orchestrator / rendering (frontend, `lib/orchestrator/`, `components/task/`)
+- [x] **Coordination made visible** — `react-loop.ts` now emits the hiring plan as `orchestrator_thinking`: "Found N specialist agents…", "X covers N of your needs — … — hires once", "Passing findings from … as shared context". The selection logic already existed; it was silent.
+- [x] **Venice hidden in user-facing strings** — all thought/fallback labels say "ARIA handling it directly" (not "Venice"). The privacy receipt remains the one deliberate Venice mention (privacy feature).
+- [x] **Hiring resilience (`hiring-plan.ts`)** — fixed the `calls=0` runs: registry-tag fuzzy resolution before lookup, one RPC retry (no false on-chain gaps on transient errors), and a **coverage guard** so any capability with a reachable agent is always hired even if Venice's selection returns empty. This was why agents sometimes weren't called at all.
+- [x] **Final answer restructure** — synthesis prompt drops the "Executive Summary/Action Plan" skeleton; it's now the detailed deliverable. `runReactLoop` returns a **structured `AgentResult`** (markdown narrative + harvested data/media blocks), rendered via `AgentResultView`. Per-agent rows now **collapse by default**.
+- [x] **Raw-media render fix** — `AgentRow` renders fallback `image/audio/video` findings via `FindingRenderer` (were shown as truncated base64 text).
+- [x] **Video playback fix** — `VideoBlock` builds a **blob URL from base64** (supports seeking; bypasses unreachable agent URLs).
+- [x] **Deliverables guard** — explicitly-requested outputs (banner→`image-generation`, announcement→`tts`, video→`video-generation`) are guaranteed before synthesis; creative caps removed from the stochastic round planner. Fixes "asked for a banner but Visual Asset agent was never called" + the unrequested video.
+
+### Agents
+- [x] **competitive-tech + visual-asset → two-phase async** — paid `POST /execute` returns a `jobId` fast; free `GET /result/:jobId` poll. Kills `TypeError: terminated` from buffered x402 requests overrunning Railway's window.
+- [x] **Video model fix** — `seedance-2-0-text-to-video` → **`seedance-1-5-pro-text-to-video`** (verified via Venice models API). The old name queued but never completed → "video render unavailable".
+
+### /app page split (new)
+- [x] `/app` = new-task screen (SmokeBackground, restored the previous clean glass prompt input + flush budget pills + uppercase subheading) → POST → **redirect** to `/app/chat/[taskId]`.
+- [x] `/app/chat/[taskId]` = clean `bg-[#0A0A0A]` execution view (reuses the rich `InlineExecution`; **live SSE** when running, **hydrated from DB** when revisiting a completed task) + **Continue this task** input.
+- [x] `app/app/layout.tsx` — shared sidebar (wallet-scoped, day-grouped history, active highlight) + nav + `WalletProvider` (shares `useWalletGuard`; reacts to MetaMask `accountsChanged`).
+- [x] New: `WalletContext`, `WalletWall`, `TaskHistoryList`, `ContinuationInput`; APIs `GET /api/task/[id]`, `GET /api/history`; `POST /api/task` accepts `parentTaskId` (continuation folds parent findings/answer into the new input). Schema: added **`parentTaskId`** only (db push done).
+
+### Reconciliations (kept existing architecture over the build prompt)
+- Kept `input` field (not `prompt`), positional `runOrchestrator(...)`, `useWalletGuard` identity (not wagmi), and the rich `InlineExecution` renderer. SmokeBackground path is `@/components/ui/smoke-background`. Did NOT persist `orchestratorLog`/`privacyLog` (revisit hydrates agent plan + payments + final answer from `agentCalls` + `result`).
+
+### Capability log — was BROKEN, now fixed
+- **Evidence it was broken:** 0 capability gaps on-chain after 25 runs; `relayer_getCapabilities('84532')` returns `{}`, so `executeVia1Shot7710` throws at `caps.paymentTokens[0]` and the bundler fallback (same 1Shot endpoint) also fails — all swallowed by `.catch(()=>{})`.
+- **Fix:** `requestCapability`/`recordTaskCompletion` fall back to a **direct orchestrator-EOA `writeContract`** (EOA `0x2597…` has 0.0032 ETH), serialized to avoid nonce races. `requestCapability` **simulates ✅** from the EOA — the capability log now works.
+- **Still needs owner action:** `recordTaskCompletion` reverts (`0x86f0d70f`) because the contract restricts it to **authorized orchestrators**. `contractOwner = 0x1b9Cf1C441ba1740DfbF97dbA3E2Ef2b331b2A77` (user wallet). Run once from the owner wallet: `authorizeOrchestrator(0x2597e88caC9c2E0B4205AcB8F172f9159bdEcE60)`; then the direct write works for it too.
+
+### Database
+- [x] **Cleared** — 60 agentCalls, 25 tasks, 1 permission wiped (fresh slate; users must reconnect to re-grant ERC-7715).
+
+### Next Session Should Start With
+1. **Redeploy all 5 agents to Railway** (visual-asset + video-production + competitive-tech changed; commit + push).
+2. **Owner authorizes orchestrator**: from `0x1b9Cf1…` call `authorizeOrchestrator(0x2597e88caC9c2E0B4205AcB8F172f9159bdEcE60)` so `recordTaskCompletion` works.
+3. Restart `next dev`, reconnect wallet (permission was cleared), run LUNARPUP on the new `/app` → `/app/chat/[taskId]` flow.
+4. Confirm: Visual Asset hires for the banner, no `terminated`, capability gaps appear on-chain (`getCapabilityGaps`), history sidebar + continuation work.
+5. Record demo video.
