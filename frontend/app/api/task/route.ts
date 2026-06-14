@@ -48,7 +48,9 @@ export async function POST(req: NextRequest) {
     task = await prisma.task.create({
       data: {
         userAddress: addr,
-        input, // store the user's actual words (not the expanded context)
+        input, // the user's actual words (shown in the UI)
+        runInput: effectiveInput, // what the orchestrator actually runs (incl. continuation context)
+        budgetUsdc: budgetUsdc ?? 10,
         status: 'pending',
         parentTaskId: parentTaskId ?? null,
       },
@@ -58,11 +60,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: String(err) }, { status: 500 })
   }
 
-  // Fire orchestrator in background (non-blocking). Signature unchanged.
-  void import('@/lib/orchestrator').then(({ runOrchestrator }) =>
-    runOrchestrator(task.id, effectiveInput, budgetUsdc ?? 10, addr)
-  )
-
+  // NOTE: the orchestrator is NOT fired here. It's started by the SSE stream the
+  // moment the client connects, so it runs tied to the live connection — which
+  // survives on hosts that suspend post-response/background work. See
+  // app/api/task/[id]/stream/route.ts.
   return NextResponse.json({ taskId: task.id })
 }
 

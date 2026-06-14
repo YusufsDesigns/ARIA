@@ -58,6 +58,7 @@ export default function ChatPage() {
   const [extraTurns, setExtraTurns] = useState<{ taskId: string; prompt: string }[]>([])
   const [completedTurns, setCompletedTurns] = useState<Set<string>>(new Set())
   const [spentByTurn, setSpentByTurn] = useState<Record<string, number>>({})
+  const [promptExpanded, setPromptExpanded] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -138,7 +139,20 @@ export default function ChatPage() {
             {/* Header */}
             <div className="mb-6 pb-5 border-b border-white/[0.08]">
               <p className="text-[10px] font-display uppercase tracking-[0.2em] text-white/60 mb-2">Your request</p>
-              <p className="text-white/85 font-body text-[15px] leading-relaxed">{task?.input ?? ' '}</p>
+              <p
+                className="text-white/85 font-body text-[15px] leading-relaxed whitespace-pre-wrap"
+                style={!promptExpanded ? { display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' } : undefined}
+              >
+                {task?.input ?? ' '}
+              </p>
+              {task && task.input.length > 200 && (
+                <button
+                  onClick={() => setPromptExpanded((e) => !e)}
+                  className="mt-1 text-[11px] font-display uppercase tracking-wider text-[#FF6B35]/80 hover:text-[#FF6B35]"
+                >
+                  {promptExpanded ? 'Show less' : 'Show more'}
+                </button>
+              )}
               <div className="flex items-center gap-4 mt-3 text-xs font-display uppercase tracking-wider">
                 <span className="text-white/60">Spent: <span className="text-[#FF6B35]">{totalSpent.toFixed(2)} USDC</span></span>
                 <span className={statusColor}>{displayStatus}</span>

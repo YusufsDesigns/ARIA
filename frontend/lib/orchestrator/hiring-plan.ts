@@ -402,5 +402,16 @@ Return valid JSON only (no markdown, no prose):
     coveredByHire.add(cap)
   }
 
+  // ── Final guarantee: every needed capability is either hired or has a fallback.
+  // Without this, a capability that Venice neither hired nor flagged (and that has
+  // no tag hint) would be silently dropped — the round produces nothing and the
+  // whole run "gives up". Anything uncovered falls back to the orchestrator.
+  const inFallbacks = new Set(fallbacks.map((f) => f.capability))
+  for (const cap of capabilities) {
+    if (!coveredByHire.has(cap) && !inFallbacks.has(cap)) {
+      fallbacks.push({ capability: cap, reason: 'no-agent-registered' })
+    }
+  }
+
   return { hires, fallbacks }
 }

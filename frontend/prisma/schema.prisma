@@ -11,6 +11,8 @@ model Task {
   id           String      @id @default(cuid())
   userAddress  String
   input        String
+  runInput     String?     // the prompt actually sent to the orchestrator (with continuation context)
+  budgetUsdc   Float       @default(10)
   status       String      @default("pending")
   result       Json?
   totalSpent   Float       @default(0)

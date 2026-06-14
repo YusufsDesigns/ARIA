@@ -604,7 +604,7 @@ Return a JSON object on a single line: { "done": boolean, "additionalCapabilitie
 - End with a "## Next steps" section: 5–7 concrete, ordered actions.
 
 ## Hard rules
-- Minimum 900 words. Detailed, specific, and decisive — a professional deliverable.
+- Target 450–650 words — tight, specific, and decisive. Quality over length; do not pad.
 - Use **bold** for every key number, name, decision point, and risk.
 - Do NOT describe, caption, or restate any generated image, audio, or video. Those assets are displayed directly beside this answer — only reference that they are ready when it matters to the plan.
 - Never use filler phrases ("it's important to note", "in conclusion", "as mentioned above").
