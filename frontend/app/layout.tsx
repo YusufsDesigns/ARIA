@@ -16,7 +16,9 @@ const hankenGrotesk = Hanken_Grotesk({
   display: 'swap',
 })
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'
+// Tolerate NEXT_PUBLIC_SITE_URL with or without a scheme (e.g. "getaria.xyz")
+const RAW_SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'
+const SITE_URL = /^https?:\/\//i.test(RAW_SITE_URL) ? RAW_SITE_URL : `https://${RAW_SITE_URL}`
 const TITLE = 'ARIA — Any goal. The right agents.'
 const DESCRIPTION =
   'ARIA turns one prompt into a team of specialist AI agents — discovered, hired, and paid per task on-chain, with zero data retained. Private by design.'
