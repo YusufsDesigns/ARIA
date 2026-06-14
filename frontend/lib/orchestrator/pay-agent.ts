@@ -29,7 +29,7 @@ export async function pollAgentResult(
   opts: { intervalMs?: number; timeoutMs?: number } = {},
 ): Promise<AgentResponse> {
   const intervalMs = opts.intervalMs ?? 5000
-  const timeoutMs = opts.timeoutMs ?? 270_000
+  const timeoutMs = opts.timeoutMs ?? 330_000 // > the agent's 300s safety, so the agent reports partial first
   const started = Date.now()
   const url = `${endpointBase.replace(/\/$/, '')}/result/${jobId}`
 

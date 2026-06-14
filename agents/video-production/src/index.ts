@@ -52,8 +52,20 @@ type JobState = {
   audioB64: string
   audioScript: string
   createdAt: number
+  // The agent's own PUBLIC base URL, derived from the incoming request so the
+  // video can be served from a reachable host without needing AGENT_BASE_URL set.
+  baseUrl: string
   // cached terminal result once finished, so repeat polls are cheap
   finished?: AgentResult
+}
+
+// Public base URL of THIS agent, inferred from the request (Railway sets the
+// forwarded host/proto). Falls back to AGENT_BASE_URL, then localhost.
+function publicBaseUrl(req: Request): string {
+  const xfHost = (req.headers['x-forwarded-host'] as string) || req.headers.host
+  const xfProto = (req.headers['x-forwarded-proto'] as string) || 'https'
+  if (xfHost) return `${xfProto}://${xfHost}`.replace(/\/$/, '')
+  return AGENT_BASE_URL
 }
 const jobStore = new Map<string, JobState>()
 
@@ -83,7 +95,7 @@ type VideoCheck =
   | { state: 'done'; videoUrl: string | null; videoB64: string | null }
   | { state: 'error'; error: string }
 
-async function checkVideo(model: string, queueId: string, vpsDownloadUrl?: string): Promise<VideoCheck> {
+async function checkVideo(model: string, queueId: string, baseUrl: string, vpsDownloadUrl?: string): Promise<VideoCheck> {
   let retrieveRes: globalThis.Response
   try {
     retrieveRes = await fetch(`${VENICE_BASE_URL}/video/retrieve`, {
@@ -105,7 +117,7 @@ async function checkVideo(model: string, queueId: string, vpsDownloadUrl?: strin
     videoStore.set(videoId, { buffer, mimeType: 'video/mp4', createdAt: Date.now() })
     // Serve via URL (streamed, range-enabled) — NOT base64. A ~5MB video as ~7MB
     // of base64 over SSE/DB corrupts/truncates and won't play.
-    return { state: 'done', videoUrl: `${AGENT_BASE_URL}/video/${videoId}`, videoB64: null }
+    return { state: 'done', videoUrl: `${baseUrl}/video/${videoId}`, videoB64: null }
   }
   const statusData = (await retrieveRes.json()) as { status?: string; download_url?: string }
   if (statusData.status === 'COMPLETED') {
@@ -208,10 +220,10 @@ app.get('/result/:jobId', async (req: Request, res: Response) => {
     res.json({ done: true, status: job.finished.status, output: JSON.stringify(job.finished), outputType: 'json', contentType: 'application/json', executionTime: 0 })
     return
   }
-  const check = await checkVideo(job.veniceModel, job.queueId, job.vpsDownloadUrl)
+  const check = await checkVideo(job.veniceModel, job.queueId, job.baseUrl || publicBaseUrl(req), job.vpsDownloadUrl)
   if (check.state === 'processing') {
-    // Safety timeout — after 4 min deliver the narration as a partial result.
-    if (Date.now() - job.createdAt > 240_000) {
+    // Safety timeout — after 5 min deliver the narration as a partial result.
+    if (Date.now() - job.createdAt > 300_000) {
       const partial = buildResult(job, null, true)
       job.finished = partial
       res.json({ done: true, status: 'partial', output: JSON.stringify(partial), outputType: 'json', contentType: 'application/json', executionTime: 0 })
@@ -302,7 +314,7 @@ app.post('/execute', async (req: Request, res: Response) => {
     if ('error' in queued) {
       // Couldn't even queue — still deliver the narration as a partial (paid work done).
       const jobId = randomUUID()
-      const job: JobState = { veniceModel: 'seedance-1-5-pro-text-to-video', queueId: '', videoPrompt, durationSeconds: 5, audioB64, audioScript, createdAt: Date.now() }
+      const job: JobState = { veniceModel: 'seedance-1-5-pro-text-to-video', queueId: '', videoPrompt, durationSeconds: 5, audioB64, audioScript, createdAt: Date.now(), baseUrl: publicBaseUrl(req) }
       const partial = buildResult(job, null, true)
       res.json({ status: 'partial', output: JSON.stringify(partial), outputType: 'json', contentType: 'application/json', executionTime: (Date.now() - start) / 1000, jobId })
       return
@@ -318,6 +330,7 @@ app.post('/execute', async (req: Request, res: Response) => {
       audioB64,
       audioScript,
       createdAt: Date.now(),
+      baseUrl: publicBaseUrl(req),
     })
 
     const processing = processingResult(jobStore.get(jobId)!, jobId)

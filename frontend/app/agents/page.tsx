@@ -1,8 +1,19 @@
+import type { Metadata } from 'next'
 import Link from 'next/link'
 import Image from 'next/image'
 import { getActiveAgents, getCapabilityGapsGraph, type GraphAgent, type GraphCapabilityGap } from '@/lib/graph'
 import { AriaCard } from '@/components/ui/aria-card'
 import { AriaFooter } from '@/components/ui/aria-footer'
+
+export const metadata: Metadata = {
+  title: 'Agent Marketplace',
+  description:
+    "Browse ARIA's on-chain registry of specialist AI agents — each priced, capability-tagged, and verifiable — plus the capability gaps developers can build for.",
+  openGraph: {
+    title: 'Agent Marketplace · ARIA',
+    description: "Specialist AI agents registered on-chain — discover, verify, and see what ARIA needs next.",
+  },
+}
 
 async function getData() {
   const [agents, gaps] = await Promise.all([
@@ -157,7 +168,7 @@ export default async function AgentsPage() {
               WHAT ARIA NEEDS NEXT
             </h2>
             <p style={{ fontFamily: 'var(--font-body)', fontSize: 15, color: '#666', lineHeight: 1.7, maxWidth: 520 }}>
-              ARIA's orchestrator requested these capabilities but found no agent.
+              ARIA&apos;s orchestrator requested these capabilities but found no agent.
               The demand is real. Be the first to build one.
             </p>
           </div>
