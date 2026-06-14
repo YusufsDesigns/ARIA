@@ -1,5 +1,5 @@
 import venice from '../venice'
-import { getAgentsByCapability, getAgent, requestCapability, type OnChainAgent } from '../registry'
+import { getAgentsByCapability, getAgent, getAllActiveAgents, requestCapability, type OnChainAgent } from '../registry'
 import { getManifestCached } from './manifest-cache'
 import type { ResolvedAgent } from './resolve-agents'
 import { getAllDistinctCapabilities, type VeniceCallTracker } from './plan'
@@ -48,6 +48,47 @@ async function lookupAgentsByCapability(
   return { ids: [], errored: true }
 }
 
+// ─── Short-TTL read cache ─────────────────────────────────────────────────────
+// Agents and their capability tags don't change during a task (and rarely between
+// tasks). The hiring search re-reads the same rows every round, so a brief cache
+// collapses the repeated on-chain round-trips with no loss of quality — a newly
+// registered agent is simply picked up on the next TTL window.
+const READ_TTL = 60_000
+const capCache = new Map<string, { at: number; ids: `0x${string}`[] }>()
+const agentCache = new Map<string, { at: number; agent: OnChainAgent }>()
+
+async function cachedAgentsByCapability(tag: string): Promise<{ ids: `0x${string}`[]; errored: boolean }> {
+  const hit = capCache.get(tag)
+  if (hit && Date.now() - hit.at < READ_TTL) return { ids: hit.ids, errored: false }
+  const r = await lookupAgentsByCapability(tag)
+  if (!r.errored) capCache.set(tag, { at: Date.now(), ids: r.ids })
+  return r
+}
+
+async function cachedGetAgent(id: `0x${string}`): Promise<OnChainAgent | null> {
+  const hit = agentCache.get(id)
+  if (hit && Date.now() - hit.at < READ_TTL) return hit.agent
+  try {
+    const agent = (await getAgent(id)) as OnChainAgent
+    agentCache.set(id, { at: Date.now(), agent })
+    return agent
+  } catch {
+    return null
+  }
+}
+
+let allActiveCache: { at: number; ids: `0x${string}`[] } | null = null
+async function cachedAllActiveAgents(): Promise<`0x${string}`[]> {
+  if (allActiveCache && Date.now() - allActiveCache.at < READ_TTL) return allActiveCache.ids
+  try {
+    const ids = (await getAllActiveAgents()) as `0x${string}`[]
+    allActiveCache = { at: Date.now(), ids }
+    return ids
+  } catch {
+    return allActiveCache?.ids ?? []
+  }
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type FitLevel = 'good' | 'partial'
@@ -92,77 +133,78 @@ export async function buildHiringPlan(
   accumulatedContext: object,
   veniceTracker: VeniceCallTracker,
   gapLoggedThisRun: Set<string>,
+  // Agents already hired earlier in THIS task — excluded so no agent runs twice
+  // (selection is semantic now, so capability-string dedup alone can't prevent it).
+  excludeAgentIds: Set<string> = new Set(),
 ): Promise<HiringPlan> {
   const candidateMap = new Map<string, CandidateAgent>()
-  const noAgentCapabilities: string[] = []
   const capabilityToCandidateIds = new Map<string, string[]>()
+  const neededSet = new Set(capabilities) // hires this round must stay within these
 
-  // ── STAGE 1: Coarse filter — on-chain lookup + manifest fetch ─────────────
+  // ── STAGE 1: Coarse filter — on-chain lookup + manifest fetch (parallel) ──
   const registeredTags = await getRegisteredTags()
 
-  for (const cap of capabilities) {
-    // Map the planned tag to the closest registered one before lookup, so a
-    // near-miss ("onchain-analysis" → "onchain-analytics") still finds its agent.
-    const lookupTag = resolveToRegisteredTag(cap, registeredTags) ?? cap
-    const { ids: agentIds, errored } = await lookupAgentsByCapability(lookupTag)
+  // 1a. Resolve agent IDs for every capability AT ONCE (cached per process).
+  const capLookups = await Promise.all(
+    capabilities.map(async (cap) => {
+      // Map the planned tag to the closest registered one so a near-miss
+      // ("onchain-analysis" → "onchain-analytics") still finds its agent.
+      const lookupTag = resolveToRegisteredTag(cap, registeredTags) ?? cap
+      const { ids, errored } = await cachedAgentsByCapability(lookupTag)
+      return { cap, ids, errored }
+    })
+  )
 
-    if (agentIds.length === 0) {
-      noAgentCapabilities.push(cap)
-      // Only log an on-chain capability gap for a GENUINE miss — never for a
-      // transient RPC error (errored), which would record a false demand signal.
-      if (!errored && !gapLoggedThisRun.has(cap)) {
-        requestCapability(cap).catch(() => {})
-        gapLoggedThisRun.add(cap)
-      }
-      continue
-    }
+  // 1b. Build the candidate POOL = every ACTIVE agent (not just tag matches). The
+  //     semantic step matches by DESCRIPTION, so a capability named "creative-
+  //     generation" still finds the visual-asset agent, and odd agent tags still
+  //     work. Tag matches are kept only as hints for the safety-net/fallback path.
+  const allActiveIds = await cachedAllActiveAgents()
+  const poolIds = [...new Set<`0x${string}`>([...allActiveIds, ...capLookups.flatMap((l) => l.ids)])]
+    .filter((id) => !excludeAgentIds.has(id)) // never re-hire an agent that already ran this task
+  const resolvedById = new Map<string, { onChain: OnChainAgent; manifest: NonNullable<unknown> }>()
+  await Promise.all(
+    poolIds.map(async (id) => {
+      const onChain = await cachedGetAgent(id)
+      if (!onChain || !onChain.isActive) return
+      const manifest = await getManifestCached(onChain.ipfsCID).catch(() => null)
+      if (!manifest?.endpointUrl) return
+      resolvedById.set(id, { onChain, manifest })
+    })
+  )
 
-    const resolvedIds: string[] = []
-    for (const id of agentIds) {
-      try {
-        const onChain = (await getAgent(id)) as OnChainAgent
-        if (!onChain.isActive) continue
-        const manifest = await getManifestCached(onChain.ipfsCID).catch(() => null)
-        if (!manifest?.endpointUrl) continue
-
-        resolvedIds.push(id)
-        if (!candidateMap.has(id)) {
-          candidateMap.set(id, {
-            id,
-            agent: {
-              id: id as `0x${string}`,
-              name: (manifest.name as string) ?? 'Unknown Agent',
-              endpointUrl: (() => {
-                // IPFS manifests may omit the https:// scheme — fetch() requires absolute URLs
-                const raw = (manifest.endpointUrl as string).replace(/\/$/, '')
-                return raw.startsWith('http') ? raw : `https://${raw}`
-              })(),
-              priceUSDC: Number(onChain.pricePerTask) / 1e6,
-            },
-            taggedCapabilities: onChain.capabilities,
-            manifest,
-          })
-        }
-      } catch {
-        // skip unresolvable
-      }
-    }
-
-    if (resolvedIds.length > 0) {
-      capabilityToCandidateIds.set(cap, resolvedIds)
-    } else {
-      // Agents exist in registry but none are active/resolvable — downtime, not a gap
-      noAgentCapabilities.push(cap)
-    }
+  // 1c. Materialise the candidate map (full pool) + per-capability tag hints.
+  for (const [id, data] of resolvedById) {
+    if (candidateMap.has(id)) continue
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const manifest = data.manifest as any
+    candidateMap.set(id, {
+      id,
+      agent: {
+        id: id as `0x${string}`,
+        name: (manifest.name as string) ?? 'Unknown Agent',
+        endpointUrl: (() => {
+          // IPFS manifests may omit the https:// scheme — fetch() requires absolute URLs
+          const raw = (manifest.endpointUrl as string).replace(/\/$/, '')
+          return raw.startsWith('http') ? raw : `https://${raw}`
+        })(),
+        priceUSDC: Number(data.onChain.pricePerTask) / 1e6,
+      },
+      taggedCapabilities: data.onChain.capabilities,
+      manifest,
+    })
+  }
+  for (const { cap, ids } of capLookups) {
+    const hint = ids.filter((id) => resolvedById.has(id))
+    if (hint.length > 0) capabilityToCandidateIds.set(cap, hint)
   }
 
-  const capabilitiesWithCandidates = capabilities.filter(c => capabilityToCandidateIds.has(c))
-
-  if (capabilitiesWithCandidates.length === 0) {
-    return {
-      hires: [],
-      fallbacks: noAgentCapabilities.map(c => ({ capability: c, reason: 'no-agent-registered' as const })),
+  // No reachable agents at all → everything falls back, and the demand is a real gap.
+  if (candidateMap.size === 0) {
+    for (const cap of capabilities) {
+      if (!gapLoggedThisRun.has(cap)) { requestCapability(cap).catch(() => {}); gapLoggedThisRun.add(cap) }
     }
+    return { hires: [], fallbacks: capabilities.map((c) => ({ capability: c, reason: 'no-agent-registered' as const })) }
   }
 
   // ── STAGE 2: Semantic selection — ONE Venice call per round ───────────────
@@ -184,7 +226,7 @@ export async function buildHiringPlan(
   }
 
   let planHires: VenicePlanHire[] = []
-  let poorFitCapabilities: string[] = []
+  let unservableCapabilities: string[] = []
 
   try {
     const planResponse = await veniceTracker.track(() =>
@@ -193,24 +235,23 @@ export async function buildHiringPlan(
         messages: [
           {
             role: 'system',
-            content: `You are ARIA's orchestrator selecting specialist agents for this round.
+            content: `You are ARIA's orchestrator. Match each needed capability to the BEST available agent — by what the agent actually DOES (its description / examples / outputs), NOT by whether a tag string matches. Capability names are free-form and may be unconventional (e.g. "creative-generation", "make-a-video", "branding"); judge intent.
 
-Needed capabilities: ${capabilitiesWithCandidates.join(', ')}
-${noAgentCapabilities.length > 0 ? `No registered agent exists for: ${noAgentCapabilities.join(', ')} — excluded, already handled separately.` : ''}
+Needed capabilities this round: ${capabilities.join(', ')}
 
-Candidate agents — read their description carefully, not just their tags:
+Available agents (the full active registry — read each description and outputs):
 ${JSON.stringify(candidatesForPrompt, null, 2)}
 
-Instructions:
-- Judge which candidate BEST FITS each needed capability based on its description and examples, not just the capability tag.
-- Prefer hiring ONE agent for MULTIPLE capabilities if its description genuinely covers them.
-- Write SPECIFIC task instructions for each hire (reference details from description/examples — not generic instructions).
-- If a candidate covers a capability only partially, still hire it (fitLevel: "partial") but focus instructions on what it does well.
-- If NO candidate for a capability is a reasonable fit — their tags match but the description shows a clear mismatch — mark it poor-fit. Do NOT mark poor-fit just because it is not perfect.
-- poor-fit is NOT a registry gap (an agent with the tag exists). Venice will handle it directly.
+Rules:
+- Hire ONLY for the needed capabilities listed above. Do NOT hire an agent for other work just because the broader task could use it later — that work happens in a later round. Every entry in "coversCapabilities" MUST be one of the needed capabilities.
+- For EACH needed capability, pick the agent whose description/outputs genuinely fit it best, EVEN IF no tag matches. An agent that produces images is the right pick for "banner"/"visual"/"creative-generation"/"logo"; one that produces video is right for "video"/"teaser"/"promo-clip"/"animation"; one that does market research fits "research"/"competitor-scan"; etc.
+- Prefer hiring ONE agent for MULTIPLE capabilities when its description covers them (e.g. an agent that makes a banner AND a voiced announcement).
+- Write SPECIFIC task instructions per hire, grounded in the agent's described abilities and the task.
+- Use fitLevel "partial" if an agent only partly covers a capability (still hire it).
+- ONLY list a capability in "unservableCapabilities" if NO agent in the list can reasonably produce that kind of output AT ALL (a genuine gap). Be strict: never mark something unservable just because the tag differs — match by what the agent does.
 
-Return valid JSON only (no markdown, no explanation):
-{ "hires": [{ "agentId": "...", "coversCapabilities": ["..."], "fitLevel": "good" | "partial", "taskInstructions": "..." }], "poorFitCapabilities": ["..."] }`,
+Return valid JSON only (no markdown, no prose):
+{ "hires": [{ "agentId": "...", "coversCapabilities": ["..."], "fitLevel": "good" | "partial", "taskInstructions": "..." }], "unservableCapabilities": ["..."] }`,
           },
           {
             role: 'user',
@@ -221,9 +262,9 @@ Return valid JSON only (no markdown, no explanation):
     )
 
     const raw = planResponse.choices[0].message.content ?? ''
-    const plan = safeParseJSON<{ hires?: VenicePlanHire[]; poorFitCapabilities?: string[] }>(raw)
+    const plan = safeParseJSON<{ hires?: VenicePlanHire[]; unservableCapabilities?: string[] }>(raw)
     planHires = Array.isArray(plan.hires) ? plan.hires : []
-    poorFitCapabilities = Array.isArray(plan.poorFitCapabilities) ? plan.poorFitCapabilities : []
+    unservableCapabilities = Array.isArray(plan.unservableCapabilities) ? plan.unservableCapabilities : []
   } catch {
     // Venice call failed — fall back to cheapest agent per capability, generic instructions
     const assignedAgents = new Set<string>()
@@ -257,10 +298,12 @@ Return valid JSON only (no markdown, no explanation):
   // x402 call is caught by executeRound's try/catch which falls back to Venice.
   // Removing the check means registered agents are always attempted.
   const hires: HiringPlan['hires'] = []
-  const fallbacks: HiringPlan['fallbacks'] = [
-    ...noAgentCapabilities.map(c => ({ capability: c, reason: 'no-agent-registered' as const })),
-    ...poorFitCapabilities.map(c => ({ capability: c, reason: 'poor-fit' as const })),
-  ]
+  // Capabilities Venice judged genuinely unservable by ANY agent → fall back to the
+  // orchestrator AND log the on-chain demand gap (the real signal for developers).
+  const fallbacks: HiringPlan['fallbacks'] = unservableCapabilities.map((c) => ({ capability: c, reason: 'no-agent-registered' as const }))
+  for (const c of unservableCapabilities) {
+    if (!gapLoggedThisRun.has(c)) { requestCapability(c).catch(() => {}); gapLoggedThisRun.add(c) }
+  }
 
   // Case-insensitive lookup — viem returns lowercase bytes32 but Venice (LLM)
   // may return the same ID with different casing in its JSON output.
@@ -275,6 +318,11 @@ Return valid JSON only (no markdown, no explanation):
   }
 
   for (const hire of planHires) {
+    // Clamp to the round's needed capabilities — drop any over-hire Venice added
+    // for work that isn't needed this round.
+    const covers = hire.coversCapabilities.filter((c) => neededSet.has(c))
+    if (covers.length === 0) continue
+
     const candidate = candidateMap.get(hire.agentId)
       ?? candidateByLowerId.get(hire.agentId.toLowerCase())
       ?? candidateByName.get(hire.agentId.toLowerCase().trim())
@@ -282,7 +330,7 @@ Return valid JSON only (no markdown, no explanation):
     if (!candidate) {
       // Last resort: pick cheapest candidate covering ANY of these capabilities
       let bestFallback: CandidateAgent | undefined
-      for (const cap of hire.coversCapabilities) {
+      for (const cap of covers) {
         const ids = capabilityToCandidateIds.get(cap) ?? []
         for (const id of ids) {
           const c = candidateMap.get(id) ?? candidateByLowerId.get(id.toLowerCase())
@@ -297,7 +345,7 @@ Return valid JSON only (no markdown, no explanation):
         const candidate = bestFallback
         hires.push({
           agent: candidate.agent,
-          coversCapabilities: hire.coversCapabilities,
+          coversCapabilities: covers,
           allRegistryCapabilities: candidate.taggedCapabilities,
           fitLevel: hire.fitLevel ?? 'good',
           taskInstructions: hire.taskInstructions,
@@ -306,7 +354,7 @@ Return valid JSON only (no markdown, no explanation):
       }
 
       console.warn(`[hiring-plan] Venice returned unknown agentId "${hire.agentId}" — known ids: ${[...candidateMap.keys()].join(', ')}`)
-      for (const cap of hire.coversCapabilities) {
+      for (const cap of covers) {
         fallbacks.push({ capability: cap, reason: 'agent-unavailable' })
       }
       continue
@@ -314,7 +362,7 @@ Return valid JSON only (no markdown, no explanation):
 
     hires.push({
       agent: candidate.agent,
-      coversCapabilities: hire.coversCapabilities,
+      coversCapabilities: covers,
       allRegistryCapabilities: candidate.taggedCapabilities,
       fitLevel: hire.fitLevel ?? 'good',
       taskInstructions: hire.taskInstructions,
@@ -329,9 +377,10 @@ Return valid JSON only (no markdown, no explanation):
   // explicitly flagged poor-fit gets the cheapest candidate hired with the raw
   // task as instructions. Guarantees: a registered agent always runs.
   const coveredByHire = new Set(hires.flatMap(h => h.coversCapabilities))
-  const flaggedPoorFit = new Set(poorFitCapabilities)
-  for (const cap of capabilitiesWithCandidates) {
-    if (coveredByHire.has(cap) || flaggedPoorFit.has(cap)) continue
+  const flaggedUnservable = new Set(unservableCapabilities)
+  // Safety net for tag-matched capabilities (we have a concrete cheapest hint).
+  for (const cap of capabilityToCandidateIds.keys()) {
+    if (coveredByHire.has(cap) || flaggedUnservable.has(cap)) continue
     const cheapest = (capabilityToCandidateIds.get(cap) ?? [])
       .map(id => candidateMap.get(id))
       .filter((c): c is CandidateAgent => !!c)

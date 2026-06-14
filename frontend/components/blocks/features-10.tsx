@@ -19,7 +19,7 @@ export function Features10({ features, className }: Features10Props) {
     <div className={className} style={{ display: 'grid', gap: 2 }}>
       {/* First row: up to 2 equal cards */}
       {features.length >= 2 && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 2 }}>
           {features.slice(0, 2).map((f, i) => (
             <FeatureCard key={i} feature={f} />
           ))}

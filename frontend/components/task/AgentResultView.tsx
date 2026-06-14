@@ -55,13 +55,13 @@ function MetricsBlock({ block }: { block: Extract<RenderBlock, { kind: 'metrics'
           )
           return (
             <div key={i} style={{ background: '#0B0B0B', border: '1px solid #1C1C1C', borderRadius: 8, padding: '11px 12px' }}>
-              <p style={{ fontFamily: 'var(--font-display)', fontSize: 8.5, color: '#666', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>{m.label}</p>
+              <p style={{ fontFamily: 'var(--font-display)', fontSize: 8.5, color: '#9a9a9a', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>{m.label}</p>
               {m.href ? (
                 <a href={m.href} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
                   {value}<span style={{ color: '#3B82F6', fontSize: 10, marginLeft: 4 }}>↗</span>
                 </a>
               ) : value}
-              {m.sub && <p style={{ fontFamily: 'var(--font-body)', fontSize: 10, color: '#5A5A5A', marginTop: 4 }}>{m.sub}</p>}
+              {m.sub && <p style={{ fontFamily: 'var(--font-body)', fontSize: 10, color: '#9a9a9a', marginTop: 4 }}>{m.sub}</p>}
             </div>
           )
         })}
@@ -83,7 +83,7 @@ function BadgesBlock({ block }: { block: Extract<RenderBlock, { kind: 'badges' }
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
                 <span style={{ fontFamily: 'var(--font-display)', fontSize: 11.5, color: '#E8E8E8' }}>{b.label}</span>
               </span>
-              {b.detail && <span style={{ fontFamily: 'var(--font-body)', fontSize: 10.5, color: '#777', lineHeight: 1.4 }}>{b.detail}</span>}
+              {b.detail && <span style={{ fontFamily: 'var(--font-body)', fontSize: 10.5, color: '#a0a0a0', lineHeight: 1.4 }}>{b.detail}</span>}
             </div>
           )
         })}
@@ -130,12 +130,12 @@ function ImageBlock({ block }: { block: Extract<RenderBlock, { kind: 'image' }> 
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={src} alt={block.alt ?? 'Generated image'} style={{ width: '100%', maxWidth: 520, borderRadius: 10, border: '1px solid #242424', display: 'block' }} />
       {block.prompt && (
-        <button onClick={() => setShowPrompt(s => !s)} style={{ marginTop: 6, background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'var(--font-display)', fontSize: 9, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase', padding: 0 }}>
+        <button onClick={() => setShowPrompt(s => !s)} style={{ marginTop: 6, background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'var(--font-display)', fontSize: 9, color: '#9a9a9a', letterSpacing: '0.1em', textTransform: 'uppercase', padding: 0 }}>
           {showPrompt ? '− Hide prompt' : '+ View generation prompt'}
         </button>
       )}
       {showPrompt && block.prompt && (
-        <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#666', marginTop: 6, lineHeight: 1.5, fontStyle: 'italic', maxWidth: 520 }}>{block.prompt}</p>
+        <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#9a9a9a', marginTop: 6, lineHeight: 1.5, fontStyle: 'italic', maxWidth: 520 }}>{block.prompt}</p>
       )}
     </div>
   )
@@ -158,14 +158,14 @@ function AudioBlock({ block }: { block: Extract<RenderBlock, { kind: 'audio' }> 
 }
 
 function VideoBlock({ block }: { block: Extract<RenderBlock, { kind: 'video' }> }) {
-  // Prefer a blob URL built from the returned bytes: blob URLs support range
-  // requests/seeking (a raw base64 data-URI often won't actually play), and it
-  // bypasses agent URLs that may point at an unreachable host (e.g. localhost).
-  // Falls back to a direct URL only when no bytes were returned.
+  // Build a blob URL from the returned bytes (blob URLs support seeking and don't
+  // depend on a reachable agent host). Keep a real http(s) URL as a fallback.
   const blobUrl = useMemo(() => {
     if (!block.b64) return null
     try {
-      const bin = atob(block.b64)
+      // Tolerate a stray data-URI prefix ("data:video/mp4;base64,…") on the bytes.
+      const raw = block.b64.replace(/^data:[^,]*,/, '')
+      const bin = atob(raw)
       const bytes = new Uint8Array(bin.length)
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
       return URL.createObjectURL(new Blob([bytes], { type: block.contentType ?? 'video/mp4' }))
@@ -175,12 +175,38 @@ function VideoBlock({ block }: { block: Extract<RenderBlock, { kind: 'video' }> 
   }, [block.b64, block.contentType])
   useEffect(() => () => { if (blobUrl) URL.revokeObjectURL(blobUrl) }, [blobUrl])
 
-  const src = blobUrl ?? block.url ?? null
+  // Only trust a real, reachable URL (not a localhost default from the agent).
+  const httpUrl = block.url && /^https?:\/\//i.test(block.url) && !block.url.includes('localhost') ? block.url : null
+  // Prefer streaming from the agent URL (reliable + seekable). Base64→blob is only
+  // a last resort — large videos don't survive the base64/SSE round-trip.
+  const sources = [httpUrl, blobUrl].filter((s): s is string => !!s)
+
+  const [idx, setIdx] = useState(0)
+  const src = sources[idx] ?? null
   if (!src) return null
+
   return (
     <div>
       <BlockTitle>{block.title ?? 'Video'}</BlockTitle>
-      <video controls playsInline poster={block.poster} src={src} style={{ width: '100%', maxWidth: 580, borderRadius: 10, border: '1px solid #242424', display: 'block', background: '#000' }} />
+      <video
+        key={src}
+        controls
+        playsInline
+        preload="auto"
+        poster={block.poster}
+        src={src}
+        // If one source can't decode/play, advance to the next available source.
+        onError={() => setIdx((i) => (i + 1 < sources.length ? i + 1 : i))}
+        style={{ width: '100%', maxWidth: 580, borderRadius: 10, border: '1px solid #242424', display: 'block', background: '#000' }}
+      />
+      <a
+        href={src}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{ display: 'inline-block', marginTop: 6, fontFamily: 'var(--font-display)', fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#5B9BF3', textDecoration: 'none' }}
+      >
+        Open video ↗
+      </a>
     </div>
   )
 }
@@ -244,8 +270,8 @@ export function AgentResultView({ output, result }: { output?: string; result?: 
           {data.provenance && (
             <p style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-display)', fontSize: 9, color: '#3E6B3E', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
               <span style={{ color: '#22C55E' }}>✓ verifiable</span>
-              <span style={{ color: '#444' }}>·</span>
-              <span style={{ color: '#5A5A5A', letterSpacing: '0.02em', textTransform: 'none', fontFamily: 'var(--font-body)', fontSize: 11 }}>{data.provenance}</span>
+              <span style={{ color: '#8f8f8f' }}>·</span>
+              <span style={{ color: '#9a9a9a', letterSpacing: '0.02em', textTransform: 'none', fontFamily: 'var(--font-body)', fontSize: 11 }}>{data.provenance}</span>
             </p>
           )}
         </div>

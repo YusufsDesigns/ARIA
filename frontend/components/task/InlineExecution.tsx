@@ -57,6 +57,7 @@ function isStructured(finding?: string, outputType?: string): boolean {
 type Props = {
   taskId: string
   onBudgetUpdate?: (spent: number) => void
+  onComplete?: (status: 'completed' | 'failed') => void
   // When false, render from `initial` only and do not open the SSE stream
   // (used when revisiting an already-completed task loaded from the DB).
   live?: boolean
@@ -181,7 +182,7 @@ function RichMediaOutput({ data }: { data: RichMediaPayload }) {
             style={{ width: '100%', maxWidth: 500, borderRadius: 8, border: '1px solid #2A2A2A', display: 'block' }}
           />
           {data.imagePrompt && (
-            <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#555', marginTop: 6, lineHeight: 1.5, fontStyle: 'italic' }}>
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#9a9a9a', marginTop: 6, lineHeight: 1.5, fontStyle: 'italic' }}>
               Prompt: {data.imagePrompt}
             </p>
           )}
@@ -304,7 +305,7 @@ function AgentRow({ agent }: { agent: AgentStep }) {
     ? <span style={{ color: '#EF4444', fontSize: 11, flexShrink: 0 }}>✗</span>
     : agent.isPaid
     ? <span style={{ color: '#22C55E', fontSize: 11, flexShrink: 0 }}>✓</span>
-    : <span style={{ color: '#444', fontSize: 11, flexShrink: 0 }}>↪</span>
+    : <span style={{ color: '#8f8f8f', fontSize: 11, flexShrink: 0 }}>↪</span>
 
   // Preview text shown while collapsed. Running → live progress; structured →
   // its headline; media → asset label; text → a snippet.
@@ -367,7 +368,7 @@ function AgentRow({ agent }: { agent: AgentStep }) {
 
         {/* Expand toggle — present whenever there's content to reveal */}
         {expandable && (
-          <span style={{ fontSize: 8, color: '#555', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 150ms', flexShrink: 0 }}>▶</span>
+          <span style={{ fontSize: 8, color: '#9a9a9a', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 150ms', flexShrink: 0 }}>▶</span>
         )}
       </div>
 
@@ -418,10 +419,10 @@ function CollapsibleSection({
           cursor: 'pointer', border: 'none', textAlign: 'left',
         }}
       >
-        <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#555', letterSpacing: '0.06em', transition: 'transform 150ms', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
+        <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#9a9a9a', letterSpacing: '0.06em', transition: 'transform 150ms', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
         <span style={{ fontFamily: 'var(--font-display)', fontSize: 10, color: '#FF6B35', letterSpacing: '0.15em', textTransform: 'uppercase', flex: 1 }}>{label}</span>
         {!open && statusLine && (
-          <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#555', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#9a9a9a', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {statusLine}
           </span>
         )}
@@ -458,7 +459,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function InlineExecution({ taskId, onBudgetUpdate, live = true, initial }: Props) {
+export function InlineExecution({ taskId, onBudgetUpdate, onComplete, live = true, initial }: Props) {
   const [thoughts, setThoughts] = useState<string[]>([])
   const [agents, setAgents] = useState<AgentStep[]>(initial?.agents ?? [])
   const [payments, setPayments] = useState<Payment[]>(initial?.payments ?? [])
@@ -561,12 +562,14 @@ export function InlineExecution({ taskId, onBudgetUpdate, live = true, initial }
         case 'synthesis_complete':
           setSynthesis({ content: event.payload.finding ?? event.payload.output ?? '', outputType: event.payload.outputType })
           setDone(true)
+          onComplete?.('completed')
           es.close()
           break
 
         case 'task_failed':
           setFailed(event.payload.message ?? 'Unknown error')
           setDone(true)
+          onComplete?.('failed')
           es.close()
           break
       }
@@ -616,7 +619,7 @@ export function InlineExecution({ taskId, onBudgetUpdate, live = true, initial }
             <p style={{ fontFamily: 'var(--font-display)', fontSize: 10, color: '#FF6B35', letterSpacing: '0.15em', textTransform: 'uppercase', flex: 1 }}>
               AGENT PLAN
             </p>
-            <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#444' }}>
+            <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#8f8f8f' }}>
               {doneCount}/{agents.length} complete
             </span>
             {!done && agents.some(a => a.status === 'running') && (
@@ -637,7 +640,7 @@ export function InlineExecution({ taskId, onBudgetUpdate, live = true, initial }
       {paidPayments.length > 0 && (
         <div style={{ border: '1px solid #1A1A1A', borderRadius: 8, overflow: 'hidden' }}>
           <div style={{ background: '#080808', padding: '6px 14px', borderBottom: '1px solid #151515' }}>
-            <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#333', letterSpacing: '0.15em', textTransform: 'uppercase' }}>x402 PAYMENTS</p>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#8a8a8a', letterSpacing: '0.15em', textTransform: 'uppercase' }}>x402 PAYMENTS</p>
           </div>
           <div style={{ padding: '8px 14px' }}>
             {paidPayments.map((p, i) => (
@@ -681,7 +684,7 @@ export function InlineExecution({ taskId, onBudgetUpdate, live = true, initial }
               <p style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: '#FF6B35', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
                 ARIA&apos;S ANSWER
               </p>
-              <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#444', marginTop: 3 }}>
+              <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#8f8f8f', marginTop: 3 }}>
                 Synthesised from {agents.filter(a => a.isPaid && a.status === 'done').length} specialist agents · all findings combined
               </p>
             </div>
@@ -692,7 +695,7 @@ export function InlineExecution({ taskId, onBudgetUpdate, live = true, initial }
             ) : (
               <FindingRenderer finding={synthesis.content} outputType={synthesis.outputType ?? 'text'} />
             )}
-            <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#444', marginTop: 18 }}>
+            <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#8f8f8f', marginTop: 18 }}>
               Each contributing agent&apos;s raw output is collapsed in the Agent Plan above — expand any row to verify the source data.
             </p>
           </div>
@@ -712,10 +715,10 @@ export function InlineExecution({ taskId, onBudgetUpdate, live = true, initial }
           flexWrap: 'wrap',
         }}>
           <span style={{ fontSize: 13 }}>🔒</span>
-          <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#333', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#8a8a8a', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
             Privacy Receipt
           </span>
-          <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#333', flex: 1 }}>
+          <span style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: '#8a8a8a', flex: 1 }}>
             {veniceCallCount} Venice AI calls · <span style={{ color: '#22C55E' }}>0 bytes retained</span> · Training data: <span style={{ color: '#22C55E' }}>None</span>
           </span>
         </div>

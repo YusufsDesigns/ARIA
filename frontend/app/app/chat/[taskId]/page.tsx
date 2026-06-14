@@ -52,9 +52,12 @@ export default function ChatPage() {
 
   const [task, setTask] = useState<TaskData | null>(null)
   const [notFound, setNotFound] = useState(false)
-  const [spent, setSpent] = useState(0)
   const [continuation, setContinuation] = useState('')
   const [continuing, setContinuing] = useState(false)
+  // Follow-ups stay in THIS chat as additional turns (no navigation away).
+  const [extraTurns, setExtraTurns] = useState<{ taskId: string; prompt: string }[]>([])
+  const [completedTurns, setCompletedTurns] = useState<Set<string>>(new Set())
+  const [spentByTurn, setSpentByTurn] = useState<Record<string, number>>({})
 
   useEffect(() => {
     let cancelled = false
@@ -63,7 +66,12 @@ export default function ChatPage() {
         const res = await fetch(`/api/task/${taskId}`)
         if (!res.ok) { if (!cancelled) setNotFound(true); return }
         const data = (await res.json()) as TaskData
-        if (!cancelled) { setTask(data); setSpent(data.totalSpent) }
+        if (cancelled) return
+        setTask(data)
+        setSpentByTurn((p) => ({ ...p, [taskId]: data.totalSpent }))
+        if (data.status === 'completed' || data.status === 'failed') {
+          setCompletedTurns((prev) => new Set(prev).add(taskId))
+        }
       } catch {
         if (!cancelled) setNotFound(true)
       }
@@ -78,21 +86,31 @@ export default function ChatPage() {
     }
   }, [task, address, router])
 
+  const markComplete = (id: string) => setCompletedTurns((prev) => new Set(prev).add(id))
+  const updateSpent = (id: string, s: number) => setSpentByTurn((p) => ({ ...p, [id]: s }))
+
+  const lastTurnId = extraTurns.length > 0 ? extraTurns[extraTurns.length - 1].taskId : taskId
+
   const handleContinue = async () => {
     if (!continuation.trim() || continuing) return
     setContinuing(true)
     try {
+      const promptText = continuation.trim()
       const res = await fetch('/api/task', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userAddress: address!.toLowerCase(),
-          input: continuation.trim(),
-          parentTaskId: taskId,
+          input: promptText,
+          parentTaskId: lastTurnId, // build on the most recent turn's results
         }),
       })
       const { taskId: newId } = await res.json()
-      router.push(`/app/chat/${newId}`)
+      setExtraTurns((prev) => [...prev, { taskId: newId, prompt: promptText }])
+      setContinuation('')
+      setContinuing(false)
+      // Bring the new turn into view.
+      requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }))
     } catch {
       setContinuing(false)
     }
@@ -100,49 +118,64 @@ export default function ChatPage() {
 
   if (!isConnected) return <WalletWall />
 
-  if (notFound) {
-    return (
-      <div className="min-h-full flex items-center justify-center bg-[#0A0A0A]">
-        <p className="text-white/40 font-body text-sm">Task not found.</p>
-      </div>
-    )
-  }
+  // Turn 0: optimistic live stream (buffered replay) unless the DB says it's done.
+  const terminal = !!task && (task.status === 'completed' || task.status === 'failed')
+  const rootLive = !terminal
+  const rootInitial = terminal ? hydrate(task!) : undefined
 
-  if (!task) {
-    return (
-      <div className="min-h-full flex items-center justify-center bg-[#0A0A0A]">
-        <div className="flex gap-1.5">
-          {[0, 1, 2].map((i) => (
-            <span key={i} className="w-2 h-2 rounded-full bg-[#FF6B35] animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />
-          ))}
-        </div>
-      </div>
-    )
-  }
-
-  const live = task.status === 'running' || task.status === 'pending'
-  const initial = live ? undefined : hydrate(task)
-  const isComplete = task.status === 'completed'
+  const totalSpent = Object.values(spentByTurn).reduce((a, b) => a + b, 0)
+  const lastDone = completedTurns.has(lastTurnId)
+  const displayStatus = !lastDone ? 'running' : task?.status === 'failed' && extraTurns.length === 0 ? 'failed' : 'completed'
+  const statusColor = displayStatus === 'failed' ? 'text-red-400' : displayStatus === 'completed' ? 'text-green-400' : 'text-[#FF6B35]'
 
   return (
     <div className="min-h-full bg-[#0A0A0A] text-white">
       <div className="max-w-3xl mx-auto px-4 py-8">
-        {/* Task header */}
-        <div className="mb-6 pb-5 border-b border-white/[0.06]">
-          <p className="text-[10px] font-display uppercase tracking-[0.2em] text-white/30 mb-2">Your request</p>
-          <p className="text-white/85 font-body text-[15px] leading-relaxed">{task.input}</p>
-          <div className="flex items-center gap-4 mt-3 text-xs font-display uppercase tracking-wider">
-            <span className="text-white/35">Spent: <span className="text-[#FF6B35]">{spent.toFixed(2)} USDC</span></span>
-            <span className={`${task.status === 'failed' ? 'text-red-400' : isComplete ? 'text-green-400' : 'text-[#FF6B35]'}`}>{task.status}</span>
-          </div>
-        </div>
+        {notFound ? (
+          <p className="text-white/70 font-body text-sm text-center mt-16">Task not found.</p>
+        ) : (
+          <>
+            {/* Header */}
+            <div className="mb-6 pb-5 border-b border-white/[0.08]">
+              <p className="text-[10px] font-display uppercase tracking-[0.2em] text-white/60 mb-2">Your request</p>
+              <p className="text-white/85 font-body text-[15px] leading-relaxed">{task?.input ?? ' '}</p>
+              <div className="flex items-center gap-4 mt-3 text-xs font-display uppercase tracking-wider">
+                <span className="text-white/60">Spent: <span className="text-[#FF6B35]">{totalSpent.toFixed(2)} USDC</span></span>
+                <span className={statusColor}>{displayStatus}</span>
+              </div>
+            </div>
 
-        {/* Execution / results — the rich renderer (live SSE or hydrated from DB) */}
-        <InlineExecution taskId={taskId} live={live} initial={initial} onBudgetUpdate={setSpent} />
+            {/* Turn 0 */}
+            <InlineExecution
+              key={rootLive ? 'live' : 'done'}
+              taskId={taskId}
+              live={rootLive}
+              initial={rootInitial}
+              onBudgetUpdate={(s) => updateSpent(taskId, s)}
+              onComplete={() => markComplete(taskId)}
+            />
 
-        {/* Continue — only on a completed task */}
-        {isComplete && (
-          <ContinuationInput value={continuation} onChange={setContinuation} onSubmit={handleContinue} loading={continuing} />
+            {/* Follow-up turns — stay in the same chat */}
+            {extraTurns.map((turn) => (
+              <div key={turn.taskId}>
+                <div className="mt-10 mb-6 pt-6 border-t border-white/[0.08]">
+                  <p className="text-[10px] font-display uppercase tracking-[0.2em] text-[#FF6B35] mb-2">Follow-up</p>
+                  <p className="text-white/85 font-body text-[15px] leading-relaxed">{turn.prompt}</p>
+                </div>
+                <InlineExecution
+                  taskId={turn.taskId}
+                  live
+                  onBudgetUpdate={(s) => updateSpent(turn.taskId, s)}
+                  onComplete={() => markComplete(turn.taskId)}
+                />
+              </div>
+            ))}
+
+            {/* Continue — once the most recent turn finishes */}
+            {lastDone && (
+              <ContinuationInput value={continuation} onChange={setContinuation} onSubmit={handleContinue} loading={continuing} />
+            )}
+          </>
         )}
       </div>
     </div>

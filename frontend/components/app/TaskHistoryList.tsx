@@ -34,7 +34,7 @@ export function TaskHistoryList({ tasks, activeTaskId }: { tasks: TaskSummary[];
     <div className="space-y-1">
       {Object.entries(groups).map(([label, dayTasks]) => (
         <div key={label}>
-          <p className="px-4 py-1.5 text-[10px] font-display uppercase tracking-[0.15em] text-white/25">
+          <p className="px-4 py-1.5 text-[10px] font-display uppercase tracking-[0.15em] text-white/55">
             {label}
           </p>
           {dayTasks.map((task) => {
@@ -51,7 +51,7 @@ export function TaskHistoryList({ tasks, activeTaskId }: { tasks: TaskSummary[];
                   {task.parentTaskId && <span className="text-[#FF6B35] text-xs shrink-0">↳</span>}
                   {task.input}
                 </p>
-                <p className="text-white/25 text-xs mt-0.5 font-body">
+                <p className="text-white/55 text-xs mt-0.5 font-body">
                   {task.totalSpent > 0 ? `${task.totalSpent.toFixed(2)} USDC · ` : ''}
                   {task.status}
                 </p>

@@ -43,14 +43,20 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const task = await prisma.task.create({
-    data: {
-      userAddress: addr,
-      input, // store the user's actual words (not the expanded context)
-      status: 'pending',
-      parentTaskId: parentTaskId ?? null,
-    },
-  })
+  let task
+  try {
+    task = await prisma.task.create({
+      data: {
+        userAddress: addr,
+        input, // store the user's actual words (not the expanded context)
+        status: 'pending',
+        parentTaskId: parentTaskId ?? null,
+      },
+    })
+  } catch (err) {
+    console.error('[api/task] create failed:', err)
+    return NextResponse.json({ error: String(err) }, { status: 500 })
+  }
 
   // Fire orchestrator in background (non-blocking). Signature unchanged.
   void import('@/lib/orchestrator').then(({ runOrchestrator }) =>

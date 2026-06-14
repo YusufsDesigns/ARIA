@@ -75,8 +75,8 @@ export function AriaFooter() {
       </div>
 
       {/* Main content */}
-      <div style={{ position: 'relative', padding: '64px 48px 48px', maxWidth: 1200, margin: '0 auto' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 64, alignItems: 'flex-start' }}>
+      <div style={{ position: 'relative', padding: 'clamp(40px,8vw,64px) clamp(20px,5vw,48px) 48px', maxWidth: 1200, margin: '0 auto' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 'clamp(32px,5vw,64px)', alignItems: 'flex-start' }}>
           {/* Left: Wordmark */}
           <div>
             <Link href="/" style={{ display: 'inline-block', marginBottom: 20, textDecoration: 'none' }}>

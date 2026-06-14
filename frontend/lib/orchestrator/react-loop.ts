@@ -94,6 +94,20 @@ function emit(
   emitTaskEvent(taskId, { type, payload, timestamp: Date.now() })
 }
 
+// Persist a Venice fallback as a (free) agent-call row so a revisited/refreshed
+// task shows the full picture — fallbacks included — not just the paid agents.
+// Fire-and-forget; amountUsdc 0 + "↪" name make the chat page render it as an
+// orchestrator-fallback row (not a payment).
+function persistFallbackCall(taskId: string, agentName: string, capability: string, output: string, outputType: string) {
+  prisma.agentCall.create({
+    data: {
+      taskId, agentName, agentAddress: 'orchestrator',
+      capability, amountUsdc: 0, status: 'completed',
+      finding: output, outputType, txHash: null,
+    },
+  }).catch(() => {})
+}
+
 // ─── Round executor ───────────────────────────────────────────────────────────
 // Hires run in PARALLEL within a round — Venice already judged them independent.
 // Fallbacks run AFTER hires complete so they receive the paid agents' findings.
@@ -136,6 +150,7 @@ async function executeRound(
           agentName: roundResults[cap].agentName, capability: cap,
           finding: result.output, outputType: result.outputType, output: result.output,
         })
+        persistFallbackCall(taskId, roundResults[cap].agentName, cap, result.output, result.outputType)
       }
       return
     }
@@ -224,7 +239,9 @@ async function executeRound(
       if (dbCallId) {
         prisma.agentCall.update({
           where: { id: dbCallId },
-          data: { status: 'completed', finding: agentResult.output, outputType: agentResult.outputType },
+          // Persist the settlement tx hash so the BaseScan link survives a refresh
+          // (the chat page hydrates payments from these rows on revisit).
+          data: { status: 'completed', finding: agentResult.output, outputType: agentResult.outputType, txHash: agentResult.txHash ?? null },
         }).catch(() => {})
       }
 
@@ -271,6 +288,7 @@ async function executeRound(
           agentName: fallbackName, capability: cap,
           finding: result.output, outputType: result.outputType, output: result.output,
         })
+        persistFallbackCall(taskId, fallbackName, cap, result.output, result.outputType)
       }
     }
   }
@@ -307,6 +325,7 @@ async function executeRound(
       agentName, capability, finding: result.output,
       outputType: result.outputType, output: result.output,
     })
+    persistFallbackCall(taskId, agentName, capability, result.output, result.outputType)
 
     if (result.capabilityGapLogged) {
       emit(taskId, 'orchestrator_thinking', {
@@ -341,6 +360,7 @@ export async function runReactLoop(
   const findings: Record<string, Finding> = {}
   const attempted = new Set<string>()
   const gapLoggedThisRun = new Set<string>()
+  const hiredAgentIds = new Set<string>() // agents hired this task — never hire twice
   const veniceTracker = new VeniceCallTracker()
 
   const deadline = Date.now() + 5 * 60_000
@@ -379,7 +399,7 @@ export async function runReactLoop(
     // SEARCH + ACT — build semantic hiring plan then execute
     // Strip binaries + slice text so Venice sees only what it needs for hiring decisions
     const hiringCtx = summarizeContextForVenice(findings)
-    const hiringPlan = await buildHiringPlan(userPrompt, capabilities, hiringCtx, veniceTracker, gapLoggedThisRun)
+    const hiringPlan = await buildHiringPlan(userPrompt, capabilities, hiringCtx, veniceTracker, gapLoggedThisRun, hiredAgentIds)
 
     // ── Narrate the plan so the coordination is visible, not silent ──────────
     // The selection logic already decided this; surfacing it is what makes the
@@ -419,6 +439,7 @@ export async function runReactLoop(
     // when Agent 1 already ran for market-intelligence and covers both.
     for (const hire of hiringPlan.hires) {
       hire.allRegistryCapabilities.forEach(c => attempted.add(c))
+      hiredAgentIds.add(hire.agent.id) // don't re-hire this agent in a later round
     }
 
     if (Object.keys(findings).length === 0) break
@@ -525,11 +546,12 @@ Return a JSON object on a single line: { "done": boolean, "additionalCapabilitie
       missingDeliverables.forEach(c => attempted.add(c))
 
       const guardCtx = summarizeContextForVenice(findings)
-      const guardPlan = await buildHiringPlan(userPrompt, missingDeliverables, guardCtx, veniceTracker, gapLoggedThisRun)
+      const guardPlan = await buildHiringPlan(userPrompt, missingDeliverables, guardCtx, veniceTracker, gapLoggedThisRun, hiredAgentIds)
       const guardResults = await executeRound(
         guardPlan, userPrompt, findings, budget, veniceTracker,
         gapLoggedThisRun, permissionContext, userAddress, taskId, permissionFrom,
       )
+      for (const hire of guardPlan.hires) hiredAgentIds.add(hire.agent.id)
       Object.assign(findings, guardResults)
     }
   }

@@ -99,11 +99,13 @@ async function checkVideo(model: string, queueId: string, vpsDownloadUrl?: strin
     return { state: 'processing' }
   }
   const contentType = retrieveRes.headers.get('content-type') ?? ''
-  if (contentType.includes('video/')) {
+  if (contentType.includes('video/') || contentType.includes('octet-stream')) {
     const buffer = Buffer.from(await retrieveRes.arrayBuffer())
     const videoId = randomUUID()
     videoStore.set(videoId, { buffer, mimeType: 'video/mp4', createdAt: Date.now() })
-    return { state: 'done', videoUrl: `${AGENT_BASE_URL}/video/${videoId}`, videoB64: buffer.toString('base64') }
+    // Serve via URL (streamed, range-enabled) — NOT base64. A ~5MB video as ~7MB
+    // of base64 over SSE/DB corrupts/truncates and won't play.
+    return { state: 'done', videoUrl: `${AGENT_BASE_URL}/video/${videoId}`, videoB64: null }
   }
   const statusData = (await retrieveRes.json()) as { status?: string; download_url?: string }
   if (statusData.status === 'COMPLETED') {
@@ -122,7 +124,6 @@ function buildResult(job: JobState, video: { videoUrl: string | null; videoB64: 
       kind: 'video',
       title: 'Launch teaser',
       url: video.videoUrl ?? undefined,
-      b64: video.videoB64 ?? undefined,
       contentType: 'video/mp4',
     })
   } else if (errored) {
@@ -168,9 +169,31 @@ app.get('/video/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Video not found or expired' })
     return
   }
-  res.setHeader('Content-Type', stored.mimeType)
+  const { buffer, mimeType } = stored
+  const total = buffer.length
+  res.setHeader('Accept-Ranges', 'bytes')
+  res.setHeader('Content-Type', mimeType)
   res.setHeader('Cache-Control', 'public, max-age=3600')
-  res.send(stored.buffer)
+  res.setHeader('Access-Control-Allow-Origin', '*')
+
+  // Range support — browsers need 206/partial responses to play & seek video.
+  const range = req.headers.range
+  if (range) {
+    const m = /bytes=(\d+)-(\d*)/.exec(range)
+    const start = m ? parseInt(m[1], 10) : 0
+    const end = m && m[2] ? parseInt(m[2], 10) : total - 1
+    if (Number.isNaN(start) || start >= total || end >= total) {
+      res.status(416).setHeader('Content-Range', `bytes */${total}`).end()
+      return
+    }
+    res.status(206)
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`)
+    res.setHeader('Content-Length', String(end - start + 1))
+    res.end(buffer.subarray(start, end + 1))
+  } else {
+    res.setHeader('Content-Length', String(total))
+    res.end(buffer)
+  }
 })
 
 // Phase 2 — free polling endpoint. Each call checks the Venice queue ONCE and

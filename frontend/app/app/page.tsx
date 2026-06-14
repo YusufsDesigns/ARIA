@@ -7,12 +7,6 @@ import { SmokeBackground } from '@/components/ui/smoke-background'
 import { WalletWall } from '@/components/app/WalletWall'
 import { useWallet } from '@/components/app/WalletContext'
 
-const QUICK_PROMPTS = [
-  'Launch a memecoin called MOONCAT on Base',
-  'Research the top DeFi protocols by TVL',
-  'Analyse Uniswap v4 competition',
-  'Create a Web3 gaming campaign',
-]
 const BUDGET_PRESETS = [5, 10, 15]
 const MAX_ATTACH_CHARS = 4000
 
@@ -51,6 +45,7 @@ export default function AppPage() {
   if (!isConnected) return <WalletWall />
 
   const effectiveBudget = grantedBudget !== null ? Math.min(budget, grantedBudget) : budget
+  const canSubmit = !!prompt.trim() && !submitting
 
   const handleFiles = (incoming: FileList | null) => {
     if (!incoming) return
@@ -95,35 +90,65 @@ export default function AppPage() {
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: '100%', overflow: 'hidden', background: '#000' }}>
       <SmokeBackground smokeColor="#FF6B35" />
-      {/* Dark scrim so content stays readable over the smoke */}
       <div style={{ position: 'absolute', inset: 0, zIndex: 0, background: 'rgba(0,0,0,0.62)' }} />
 
-      <div style={{
-        position: 'absolute', inset: 0, zIndex: 2,
-        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-        padding: '48px 24px', overflowY: 'auto',
-      }}>
-        <div style={{ width: '100%', maxWidth: 680, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-
-          <Image src="/Logo.png" alt="ARIA" width={90} height={34} style={{ objectFit: 'contain', marginBottom: 28, filter: 'brightness(0) invert(1)' }} />
-
+      <div style={{ position: 'absolute', inset: 0, zIndex: 2, display: 'flex', flexDirection: 'column', padding: '64px 16px 16px' }}>
+        {/* Centred greeting fills the space above the docked input */}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <Image src="/Logo.png" alt="ARIA" width={84} height={32} style={{ objectFit: 'contain', marginBottom: 22, filter: 'brightness(0) invert(1)' }} />
           <p style={{
-            fontFamily: 'var(--font-display)', fontSize: 'clamp(14px, 1.8vw, 18px)',
-            fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
-            color: 'rgba(255,255,255,0.75)', marginBottom: 36, textAlign: 'center',
+            fontFamily: 'var(--font-display)', fontSize: 'clamp(15px, 2vw, 19px)',
+            fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase',
+            color: 'rgba(255,255,255,0.8)', textAlign: 'center', maxWidth: 460, lineHeight: 1.4,
           }}>
             What would you like to accomplish?
           </p>
+        </div>
 
-          {/* Prompt textarea + file drop zone */}
+        {/* Bottom-docked input */}
+        <div style={{ width: '100%', maxWidth: 680, margin: '0 auto' }}>
+
+          {/* Budget — thin line above the field so it doesn't crowd the prompt */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 10, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.45)' }}>
+              Budget
+            </span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {BUDGET_PRESETS.map((b) => {
+                const active = effectiveBudget === b
+                const disabled = grantedBudget !== null && b > grantedBudget
+                return (
+                  <button
+                    key={b}
+                    onClick={() => setBudget(grantedBudget !== null ? Math.min(b, grantedBudget) : b)}
+                    disabled={disabled}
+                    style={{
+                      height: 28, minWidth: 38, padding: '0 10px', borderRadius: 8,
+                      fontFamily: 'var(--font-display)', fontSize: 11, fontWeight: 700,
+                      border: active ? '1px solid #FF6B35' : '1px solid rgba(255,255,255,0.12)',
+                      background: active ? 'rgba(255,107,53,0.15)' : 'rgba(255,255,255,0.04)',
+                      color: active ? '#FF6B35' : 'rgba(255,255,255,0.55)',
+                      cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.35 : 1, transition: 'all 150ms',
+                    }}
+                  >
+                    {b}
+                  </button>
+                )
+              })}
+            </div>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 10, letterSpacing: '0.1em', color: 'rgba(255,255,255,0.4)' }}>USDC</span>
+          </div>
+
+          {/* Input card — the prompt field is the dominant element */}
           <div
             style={{
               width: '100%',
-              background: dragging ? 'rgba(255,107,53,0.06)' : 'rgba(10,10,10,0.82)',
+              background: dragging ? 'rgba(255,107,53,0.08)' : 'rgba(12,12,12,0.9)',
               backdropFilter: 'blur(20px)',
-              border: `1px solid ${dragging ? 'rgba(255,107,53,0.7)' : focused ? 'rgba(255,107,53,0.6)' : 'rgba(255,255,255,0.08)'}`,
+              border: `1px solid ${dragging ? 'rgba(255,107,53,0.7)' : focused ? 'rgba(255,107,53,0.55)' : 'rgba(255,255,255,0.1)'}`,
+              borderRadius: 22,
               transition: 'border-color 200ms, background 200ms',
-              marginBottom: 8,
+              padding: '4px 6px 6px',
             }}
             onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
             onDragLeave={() => setDragging(false)}
@@ -134,105 +159,63 @@ export default function AppPage() {
               onChange={(e) => setPrompt(e.target.value)}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
-              placeholder="Describe your goal in plain language..."
-              rows={4}
+              placeholder="Describe your goal in plain language…"
+              rows={3}
               style={{
                 width: '100%', background: 'transparent', border: 'none', outline: 'none',
                 fontFamily: 'var(--font-body)', fontSize: 15, color: '#fff',
-                padding: '18px 20px 12px', resize: 'none', lineHeight: 1.6, caretColor: '#FF6B35',
+                padding: '14px 14px 6px', resize: 'none', lineHeight: 1.55, minHeight: 76, maxHeight: 240, caretColor: '#FF6B35',
               }}
               onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmit() }}
             />
 
             {attachedFiles.length > 0 && (
-              <div style={{ padding: '0 16px 10px', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              <div style={{ padding: '0 10px 6px', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {attachedFiles.map((f, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,107,53,0.1)', border: '1px solid rgba(255,107,53,0.25)', padding: '3px 10px 3px 8px' }}>
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,107,53,0.1)', border: '1px solid rgba(255,107,53,0.25)', borderRadius: 8, padding: '3px 8px' }}>
                     <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: '#FF6B35' }}>📎 {f.name}</span>
-                    <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#555', letterSpacing: '0.06em' }}>{formatSize(f.size)}</span>
-                    <button onClick={() => removeFile(i)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#555', fontSize: 12, padding: '0 0 0 2px', lineHeight: 1 }}>×</button>
+                    <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: '#8a8a8a' }}>{formatSize(f.size)}</span>
+                    <button onClick={() => removeFile(i)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#8a8a8a', fontSize: 13, padding: 0, lineHeight: 1 }}>×</button>
                   </div>
                 ))}
               </div>
             )}
 
-            <div style={{ padding: '0 16px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* One compact control row: attach (left) · send (right) */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px 2px' }}>
               <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.txt,.md,.json,.csv" style={{ display: 'none' }} onChange={(e) => handleFiles(e.target.files)} />
               <button
                 onClick={() => fileInputRef.current?.click()}
-                style={{ fontFamily: 'var(--font-display)', fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', background: 'transparent', border: '1px solid rgba(255,255,255,0.08)', padding: '5px 12px', cursor: 'pointer', transition: 'all 150ms', display: 'flex', alignItems: 'center', gap: 5 }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = '#FF6B35'; e.currentTarget.style.borderColor = 'rgba(255,107,53,0.4)' }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.3)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)' }}
+                title="Attach files"
+                style={{ flex: '0 0 auto', width: 34, height: 34, borderRadius: 10, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.6)', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               >
-                <span>⊕</span> Attach File
+                📎
               </button>
-              <span style={{ fontFamily: 'var(--font-display)', fontSize: 9, color: 'rgba(255,255,255,0.15)', letterSpacing: '0.06em' }}>
-                or drop files here · max 5 · images, PDF, text
-              </span>
-            </div>
-          </div>
-
-          {/* Quick prompts */}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 22, marginTop: 6 }}>
-            {QUICK_PROMPTS.map((q) => (
+              <div style={{ flex: 1 }} />
               <button
-                key={q}
-                onClick={() => setPrompt(q)}
-                style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', padding: '5px 12px', cursor: 'pointer', transition: 'all 150ms' }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = '#FF6B35'; e.currentTarget.style.borderColor = 'rgba(255,107,53,0.4)' }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.6)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)' }}
+                onClick={handleSubmit}
+                disabled={!canSubmit}
+                style={{
+                  flex: '0 0 auto', height: 38, padding: '0 18px', borderRadius: 11,
+                  background: canSubmit ? '#FF6B35' : 'rgba(255,107,53,0.18)',
+                  color: canSubmit ? '#000' : 'rgba(255,107,53,0.5)',
+                  fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 12.5,
+                  letterSpacing: '0.06em', textTransform: 'uppercase',
+                  border: 'none', cursor: canSubmit ? 'pointer' : 'default',
+                  transition: 'background 200ms, color 200ms', whiteSpace: 'nowrap',
+                }}
               >
-                {q}
+                {submitting ? 'Starting…' : 'Start →'}
               </button>
-            ))}
-          </div>
-
-          {/* Budget + submit row */}
-          <p style={{ fontFamily: 'var(--font-display)', fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.14em', textTransform: 'uppercase', alignSelf: 'flex-start', marginBottom: 6 }}>
-            Spending cap — unused budget is never charged
-          </p>
-          <div className="aria-budget-row" style={{ marginBottom: 12 }}>
-            <div style={{ display: 'flex', gap: 2, flex: 'none' }}>
-              {BUDGET_PRESETS.map((b) => (
-                <button
-                  key={b}
-                  onClick={() => setBudget(grantedBudget !== null ? Math.min(b, grantedBudget) : b)}
-                  style={{
-                    fontFamily: 'var(--font-display)', fontSize: 11, fontWeight: 700,
-                    letterSpacing: '0.08em', textTransform: 'uppercase',
-                    padding: '0 18px', cursor: 'pointer',
-                    border: effectiveBudget === b ? '1px solid #FF6B35' : '1px solid rgba(255,255,255,0.1)',
-                    background: effectiveBudget === b ? 'rgba(255,107,53,0.12)' : 'rgba(10,10,10,0.6)',
-                    color: effectiveBudget === b ? '#FF6B35' : 'rgba(255,255,255,0.3)',
-                    transition: 'all 150ms', backdropFilter: 'blur(8px)', whiteSpace: 'nowrap',
-                  }}
-                >
-                  {b} USDC
-                </button>
-              ))}
             </div>
-
-            <button
-              onClick={handleSubmit}
-              disabled={!prompt.trim() || submitting}
-              style={{
-                flex: 1,
-                background: prompt.trim() && !submitting ? '#FF6B35' : 'rgba(26,10,0,0.6)',
-                color: prompt.trim() && !submitting ? '#000' : 'rgba(255,107,53,0.4)',
-                fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 13,
-                letterSpacing: '0.1em', textTransform: 'uppercase',
-                border: 'none', cursor: prompt.trim() && !submitting ? 'pointer' : 'default',
-                padding: '0 24px', height: 48, transition: 'background 200ms, color 200ms', backdropFilter: 'blur(8px)',
-              }}
-            >
-              {submitting ? 'STARTING…' : '→ START TASK'}
-            </button>
           </div>
 
-          {error && <p style={{ color: '#EF4444', fontSize: 13, fontFamily: 'var(--font-body)', textAlign: 'center' }}>{error}</p>}
+          {error && (
+            <p style={{ color: '#EF4444', fontSize: 12, fontFamily: 'var(--font-body)', textAlign: 'center', marginTop: 8 }}>{error}</p>
+          )}
 
-          <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'rgba(255,255,255,0.35)', textAlign: 'center', marginTop: 8 }}>
-            Agents charge 0.20–0.60 USDC per task · Unused budget is never spent · ⌘↵ to submit
+          <p style={{ fontFamily: 'var(--font-body)', fontSize: 11, color: 'rgba(255,255,255,0.5)', textAlign: 'center', marginTop: 10 }}>
+            Agents charge 0.20–0.60 USDC per task · ⌘↵ to submit
           </p>
         </div>
       </div>
