@@ -32,6 +32,13 @@ This README explains what ARIA is, **why it's being built**, what it does, **how
   - [Deployment](#deployment)
   - [Environment variables](#environment-variables)
   - [Hackathon code-usage index (Smart Accounts Kit, x402, 1Shot, Venice)](#hackathon-code-usage-index-smart-accounts-kit-x402-1shot-venice)
+    - [Smart Accounts Kit usage](#smart-accounts-kit-usage)
+      - [Advanced Permissions (ERC-7715)](#advanced-permissions-erc-7715)
+      - [Delegations](#delegations)
+      - [Redelegation](#redelegation)
+      - [x402](#x402)
+    - [1Shot API usage](#1shot-api-usage)
+    - [Venice AI usage](#venice-ai-usage)
   - [Further reading](#further-reading)
 
 ---
@@ -366,9 +373,7 @@ All inference — orchestrator and every agent — runs through Venice (zero ret
 
 ## Further reading
 
-- [`CLAUDE.md`](./CLAUDE.md) — the complete project brief and build spec.
 - [`METAMASK.md`](./METAMASK.md) — MetaMask Smart Accounts Kit usage notes.
-- [`HANDOFF.md`](./HANDOFF.md) — payment-flow walkthrough and the x402 / redelegation debugging history.
 - [`PROGRESS.md`](./PROGRESS.md) — the full build log.
 - [`STYLE.md`](./STYLE.md) — the design system.
 
