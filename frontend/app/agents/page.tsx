@@ -5,6 +5,11 @@ import { getActiveAgents, getCapabilityGapsGraph, type GraphAgent, type GraphCap
 import { AriaCard } from '@/components/ui/aria-card'
 import { AriaFooter } from '@/components/ui/aria-footer'
 
+// Always read fresh from The Graph / contract — newly registered (or deactivated)
+// agents must appear without a rebuild. Without this the page is statically cached
+// at build time and never reflects on-chain changes.
+export const dynamic = 'force-dynamic'
+
 export const metadata: Metadata = {
   title: 'Agent Marketplace',
   description:

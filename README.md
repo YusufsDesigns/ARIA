@@ -11,25 +11,28 @@ This README explains what ARIA is, **why it's being built**, what it does, **how
 
 ## Table of contents
 
-- [Why ARIA is being built](#why-aria-is-being-built)
-- [What ARIA is for](#what-aria-is-for)
-- [What ARIA can do](#what-aria-can-do)
-- [How ARIA compares to other agents and frameworks](#how-aria-compares-to-other-agents-and-frameworks)
-- [How it works](#how-it-works)
-- [Architecture](#architecture)
-- [The software behind it — every tool and why](#the-software-behind-it--every-tool-and-why)
-- [Monorepo layout](#monorepo-layout)
-- [The five specialist agents](#the-five-specialist-agents)
-- [The on-chain layer](#the-on-chain-layer)
-- [The trust architecture (payments & delegation)](#the-trust-architecture-payments--delegation)
-- [Privacy](#privacy)
-- [End-to-end walkthrough](#end-to-end-walkthrough)
-- [Current constraints — and how they'll be solved](#current-constraints--and-how-theyll-be-solved)
-- [Roadmap](#roadmap)
-- [Running locally](#running-locally)
-- [Deployment](#deployment)
-- [Environment variables](#environment-variables)
-- [Further reading](#further-reading)
+- [ARIA — Autonomous Reasoning \& Intelligence Agents](#aria--autonomous-reasoning--intelligence-agents)
+  - [Table of contents](#table-of-contents)
+  - [Why ARIA is being built](#why-aria-is-being-built)
+  - [What ARIA is for](#what-aria-is-for)
+  - [What ARIA can do](#what-aria-can-do)
+  - [How ARIA compares to other agents and frameworks](#how-aria-compares-to-other-agents-and-frameworks)
+  - [How it works](#how-it-works)
+  - [Architecture](#architecture)
+  - [The software behind it — every tool and why](#the-software-behind-it--every-tool-and-why)
+  - [Monorepo layout](#monorepo-layout)
+  - [The five specialist agents](#the-five-specialist-agents)
+  - [The on-chain layer](#the-on-chain-layer)
+  - [The trust architecture (payments \& delegation)](#the-trust-architecture-payments--delegation)
+  - [Privacy](#privacy)
+  - [End-to-end walkthrough](#end-to-end-walkthrough)
+  - [Current constraints — and how they'll be solved](#current-constraints--and-how-theyll-be-solved)
+  - [Roadmap](#roadmap)
+  - [Running locally](#running-locally)
+  - [Deployment](#deployment)
+  - [Environment variables](#environment-variables)
+  - [Hackathon code-usage index (Smart Accounts Kit, x402, 1Shot, Venice)](#hackathon-code-usage-index-smart-accounts-kit-x402-1shot-venice)
+  - [Further reading](#further-reading)
 
 ---
 
@@ -165,9 +168,6 @@ ARIA/
 │   ├── visual-asset/            (banner image + voiced announcement)
 │   └── video-production/        (launch teaser, two-phase async)
 ├── README.md        (this file)
-├── HACKATHON.md     Hackathon submission summary
-├── CLAUDE.md        Full project brief / build spec
-├── EXPLANATION.md   Deep architecture reference (delegation, x402, 1Shot, ReAct)
 └── PROGRESS.md      Build log
 ```
 
@@ -186,6 +186,8 @@ Each agent is an independent Express service protected by x402 payment middlewar
 | **Video Production** | `video-generation`, `video-production`, `media-content` | 0.60 USDC | A narrated launch teaser via Venice `seedance` (async queue + polling), streamed from the agent. |
 
 Pricing is reduced for the testnet demo.
+
+> **These five agents are not the platform — they are seed supply.** ARIA is a *permissionless marketplace*: any developer can list their own agent (in any language, behind any model) by uploading a manifest to IPFS and calling `registerAgent` on-chain from the [`/register`](./frontend/app/register/page.tsx) page. From that moment the orchestrator can discover, hire, and pay it automatically — no platform approval, no platform cut beyond relayed gas. The five agents above are simply the first-party services ARIA hosts on Railway so the hackathon demo has something to coordinate on day one. The intended end state is thousands of third-party agents; see [Roadmap](#roadmap).
 
 ## The on-chain layer
 
@@ -213,7 +215,7 @@ Orchestrator Smart Account (server-side, holds NO funds)
 MetaMask x402 Facilitator  →  verifies the chain, settles USDC  →  Agent owner's wallet
 ```
 
-The orchestrator only ever holds **bounded signing authority**, never money. Its own registry-write gas is relayed in USDC by **1Shot**. Full details in [`EXPLANATION.md`](./EXPLANATION.md) and [`METAMASK.md`](./METAMASK.md).
+The orchestrator only ever holds **bounded signing authority**, never money. Its own registry-write gas is relayed in USDC by **1Shot**. Exact code locations are in [Hackathon code-usage index](#hackathon-code-usage-index-smart-accounts-kit-x402-1shot-venice); deeper notes in [`METAMASK.md`](./METAMASK.md).
 
 ## Privacy
 
@@ -322,12 +324,52 @@ NEXT_PUBLIC_PINATA_GATEWAY=<your-gateway>.mypinata.cloud
 
 > ⚠️ **Security:** the orchestrator private key, DB URL, and API keys are real credentials. Keep `.env` out of git and **rotate any key that has been exposed**.
 
+## Hackathon code-usage index (Smart Accounts Kit, x402, 1Shot, Venice)
+
+Every code link below is a **permalink pinned to commit [`c0a6713`](https://github.com/YusufsDesigns/ARIA/tree/c0a6713879eca5b9798008455ba31676a294f5e1)** so the referenced lines never drift.
+
+**How the three delegation patterns map in ARIA:**
+
+- **Advanced Permissions (ERC-7715)** — the *user → orchestrator* budget grant. One MetaMask signature; `requestExecutionPermissions` with `to: <orchestrator EOA>`, `type: erc20-token-periodic`. This is the only signature the user ever makes.
+- **Redelegation (ERC-7710)** — the *orchestrator → facilitator* sub-delegation created from the ERC-7715 grant for **each** x402 agent payment (open delegation, scoped to the exact price, redeemable only by the facilitator). This is what satisfies the A2A / redelegation requirement.
+- **Delegation (ERC-7710 root)** — the *orchestrator → 1Shot relayer* root delegation used for gas-abstracted on-chain writes (capability-gap logging, task-completion records).
+
+### Smart Accounts Kit usage
+
+#### Advanced Permissions (ERC-7715)
+- **Request Advanced Permissions** — `requestExecutionPermissions` (the one-signature USDC budget grant): [`frontend/components/wallet/ConnectButton.tsx#L92-L143`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/components/wallet/ConnectButton.tsx#L92-L143)
+- **Redeem Advanced Permissions** — the granted permission is consumed through the x402 buyer flow: `createx402DelegationProvider({ parentPermissionContext })` turns the ERC-7715 grant into a payable redelegation that the MetaMask facilitator redeems to settle USDC: [`frontend/lib/orchestrator/pay-agent.ts#L94-L164`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/orchestrator/pay-agent.ts#L94-L164)
+
+#### Delegations
+- **Create delegation** — root EIP-7710 delegation (orchestrator → 1Shot relayer), built and signed with the orchestrator smart account: [`frontend/lib/oneshot.ts#L148-L173`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/oneshot.ts#L148-L173)
+- **Redeem delegation** — the relayer redeems that delegation via `relayer_send7710Transaction`; ARIA calls it on every capability-gap log and task-completion record: [`frontend/lib/oneshot.ts#L206-L216`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/oneshot.ts#L206-L216) · callers in [`frontend/lib/registry.ts#L151-L198`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/registry.ts#L151-L198)
+- **Smart-account setup** — `toMetaMaskSmartAccount` (orchestrator) + on-connect smart-account check: [`frontend/lib/delegation.ts#L46-L58`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/delegation.ts#L46-L58)
+
+#### Redelegation
+- **Create redelegation** — the open ERC-7710 redelegation from the ERC-7715 grant, signed by the orchestrator EOA, one per agent payment: [`frontend/lib/orchestrator/pay-agent.ts#L122-L132`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/orchestrator/pay-agent.ts#L122-L132)
+
+#### x402
+- **Server (seller)** — x402 + ERC-7710 payment middleware on each agent: middleware/route in [`agents/market-intelligence/src/index.ts#L14-L31`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/agents/market-intelligence/src/index.ts#L14-L31); facilitator + `x402ExactEvmErc7710ServerScheme` registration in [`agents/market-intelligence/src/config.ts#L1-L23`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/agents/market-intelligence/src/config.ts#L1-L23) (same pattern in `competitive-tech`, `positioning`, `visual-asset`, `video-production`)
+- **Client — x402-ERC-7710 asset transfer** — `x402Erc7710Client` + `wrapFetchWithPayment` driving the 402 → redelegate → settle cycle: [`frontend/lib/orchestrator/pay-agent.ts#L94-L164`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/orchestrator/pay-agent.ts#L94-L164)
+
+### 1Shot API usage
+- **Full EIP-7710 relay client** — `relayer_getCapabilities` → `relayer_getFeeData` → `relayer_estimate7710Transaction` → `relayer_send7710Transaction` → `relayer_getStatus`, with gas paid in USDC: [`frontend/lib/oneshot.ts`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/oneshot.ts)
+- **End-to-end relay function** (`executeVia1Shot7710`): [`frontend/lib/oneshot.ts#L115-L216`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/oneshot.ts#L115-L216)
+- **Where it's invoked** — every capability-gap log and task-completion record routes through 1Shot first: [`frontend/lib/registry.ts#L151-L198`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/registry.ts#L151-L198)
+
+### Venice AI usage
+All inference — orchestrator and every agent — runs through Venice (zero retention, zero training).
+- **Core SDK wrapper** — text (`llama-3.3-70b`), web search, web scraping, image (`fluently-xl`), TTS (`tts-kokoro`): [`frontend/lib/venice.ts`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/venice.ts)
+- **Orchestrator reasoning / planning** — [`frontend/lib/orchestrator/plan.ts`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/orchestrator/plan.ts) · **synthesis & direct fallback** — [`frontend/lib/orchestrator/venice-fallback.ts`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/frontend/lib/orchestrator/venice-fallback.ts)
+- **Agent inference** — Market Intelligence (search): [`agents/market-intelligence/src/index.ts`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/agents/market-intelligence/src/index.ts) · Visual Asset (image + TTS): [`agents/visual-asset/src/index.ts`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/agents/visual-asset/src/index.ts)
+- **Venice text-to-video** (`seedance-1-5-pro-text-to-video`, async queue + retrieve): [`agents/video-production/src/index.ts#L72-L130`](https://github.com/YusufsDesigns/ARIA/blob/c0a6713879eca5b9798008455ba31676a294f5e1/agents/video-production/src/index.ts#L72-L130)
+
 ## Further reading
 
-- [`HACKATHON.md`](./HACKATHON.md) — the hackathon submission summary.
 - [`CLAUDE.md`](./CLAUDE.md) — the complete project brief and build spec.
-- [`EXPLANATION.md`](./EXPLANATION.md) — deep dive on delegation, redelegation, x402, 1Shot, and the ReAct loop.
 - [`METAMASK.md`](./METAMASK.md) — MetaMask Smart Accounts Kit usage notes.
+- [`HANDOFF.md`](./HANDOFF.md) — payment-flow walkthrough and the x402 / redelegation debugging history.
+- [`PROGRESS.md`](./PROGRESS.md) — the full build log.
 - [`STYLE.md`](./STYLE.md) — the design system.
 
 ---
