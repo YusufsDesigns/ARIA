@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { WalletProvider, useWallet } from '@/components/app/WalletContext'
 import { TaskHistoryList, type TaskSummary } from '@/components/app/TaskHistoryList'
+import { BalanceTracker } from '@/components/app/BalanceTracker'
 
 function Shell({ children }: { children: React.ReactNode }) {
   const { address, isConnected, disconnect } = useWallet()
@@ -44,7 +45,8 @@ function Shell({ children }: { children: React.ReactNode }) {
   const isNewTask = pathname === '/app'
 
   const walletBar = isConnected && address ? (
-    <div className="flex items-center gap-4">
+    <div className="flex items-center gap-3 sm:gap-4">
+      <BalanceTracker />
       <div className="flex items-center gap-2">
         <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
         <span className="text-white/70 text-xs font-body">{short}</span>

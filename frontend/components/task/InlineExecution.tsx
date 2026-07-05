@@ -509,6 +509,8 @@ export function InlineExecution({ taskId, onBudgetUpdate, onComplete, live = tru
               timestamp: event.timestamp,
             },
           ])
+          // Nudge the header balance tracker to refresh — the payer's USDC just dropped.
+          if (typeof window !== 'undefined') window.dispatchEvent(new Event('aria:balance-refresh'))
           break
 
         case 'agent_failed':
